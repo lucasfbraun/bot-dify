@@ -1,0 +1,25 @@
+services:
+  agente-pu-web:
+    build: .
+    image: agente-pu-web:latest
+    container_name: agente-pu-web
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      # só a própria máquina acessa; o nginx (HTTPS) faz o proxy para cá
+      - "127.0.0.1:8090:8000"
+    volumes:
+      - agente-pu-dados:/data
+    # Se o HTTPS for feito pelo nginx do próprio Dify (container), descomente para
+    # colocar este app na mesma rede do Dify (veja o README, opção B):
+    # networks:
+    #   - default
+    #   - dify
+
+volumes:
+  agente-pu-dados:
+
+# networks:
+#   dify:
+#     external: true
+#     name: docker_default

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Agente Técnico PU · Grupo Flexível</title>
+  <meta name="description" content="Especialista em poliuretano do Grupo Flexível">
+  <meta name="theme-color" content="#003D3D">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Agente PU">
+  <link rel="manifest" href="/manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="/assets/app.css?v=1">
+</head>
+<body>
+  <!-- ============ LOGIN ============ -->
+  <section id="tela-login" class="tela login" hidden>
+    <div class="login-fundo" aria-hidden="true"></div>
+    <main class="login-conteudo">
+      <div class="login-card">
+        <img class="login-logo" src="/icons/logo-flexivel.svg" alt="Grupo Flexível" width="184" height="57">
+        <h1>Agente Técnico PU</h1>
+        <p class="login-sub">Especialista em poliuretano do Grupo Flexível: produtos, engenharias, qualidade, custos e normas.</p>
+        <form id="form-login" novalidate>
+          <label for="login-usuario">Usuário da rede</label>
+          <input id="login-usuario" name="usuario" autocomplete="username" autocapitalize="none" spellcheck="false"
+                 placeholder="nome.sobrenome" required>
+          <label for="login-senha">Senha</label>
+          <div class="campo-senha">
+            <input id="login-senha" name="senha" type="password" autocomplete="current-password" required>
+            <button type="button" class="btn-icone" id="ver-senha" aria-label="Mostrar senha" title="Mostrar senha">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5c-5 0-9 4.5-10 7 1 2.5 5 7 10 7s9-4.5 10-7c-1-2.5-5-7-10-7zm0 11a4 4 0 110-8 4 4 0 010 8z"/></svg>
+            </button>
+          </div>
+          <p id="login-erro" class="erro" role="alert" hidden></p>
+          <button class="btn btn-primario btn-largo" id="btn-entrar" type="submit">Entrar</button>
+          <p class="login-dica">Use o mesmo usuário e senha do computador (domínio <span id="dominio">flexivel.local</span>).</p>
+        </form>
+      </div>
+
+      <div id="card-instalar" class="card-instalar" hidden>
+        <img src="/icons/icon-192.png" alt="" width="48" height="48">
+        <div class="card-instalar-texto">
+          <strong>Instale o app no seu celular</strong>
+          <span id="instalar-texto">Acesse o Agente Técnico PU direto da tela inicial, como um aplicativo.</span>
+        </div>
+        <button class="btn btn-claro" id="btn-instalar" type="button">Instalar</button>
+      </div>
+      <div id="instrucao-ios" class="instrucao-ios" hidden>
+        <strong>No iPhone/iPad:</strong> toque em
+        <svg viewBox="0 0 24 24" aria-label="Compartilhar"><path d="M12 3l4 4h-3v8h-2V7H8l4-4zm-7 8h3v2H7v7h10v-7h-1v-2h3v11H5V11z"/></svg>
+        <b>Compartilhar</b> e depois em <b>Adicionar à Tela de Início</b>.
+      </div>
+      <p class="login-rodape">Grupo Flexível · uso interno</p>
+    </main>
+  </section>
+
+  <!-- ============ APLICAÇÃO ============ -->
+  <section id="tela-app" class="tela app" hidden>
+    <header class="topo">
+      <button class="btn-icone topo-menu" id="btn-menu" aria-label="Conversas" title="Conversas">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+      </button>
+      <img class="topo-logo" src="/icons/logo-flexivel.svg" alt="Grupo Flexível" width="110" height="34">
+      <span class="topo-titulo">Agente Técnico PU</span>
+      <div class="topo-direita">
+        <button class="btn-icone topo-nova" id="btn-nova-topo" aria-label="Nova conversa" title="Nova conversa">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+        </button>
+        <button class="avatar" id="btn-avatar" aria-haspopup="menu" aria-expanded="false" title="Minha conta"></button>
+        <div class="menu" id="menu-usuario" role="menu" hidden>
+          <div class="menu-cab"><strong id="menu-nome"></strong><span id="menu-email"></span></div>
+          <button role="menuitem" id="menu-chat">Conversas</button>
+          <button role="menuitem" id="menu-admin" hidden>Usuários e acessos</button>
+          <button role="menuitem" id="menu-tema">Tema: automático</button>
+          <button role="menuitem" id="menu-sair">Sair</button>
+        </div>
+      </div>
+    </header>
+
+    <div class="corpo">
+      <!-- barra lateral -->
+      <aside class="lateral" id="lateral" aria-label="Conversas">
+        <button class="btn btn-primario btn-largo" id="btn-nova">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+          Nova conversa
+        </button>
+        <input class="busca-conversa" id="busca-conversa" type="search" placeholder="Buscar nas conversas">
+        <nav id="lista-conversas" class="lista-conversas"></nav>
+        <button class="btn btn-texto" id="btn-mais-conversas" hidden>Carregar mais</button>
+      </aside>
+      <div class="veu" id="veu" hidden></div>
+
+      <!-- chat -->
+      <main class="principal" id="view-chat">
+        <div class="mensagens" id="mensagens" aria-live="polite">
+          <div class="boas-vindas" id="boas-vindas">
+            <img src="/icons/icon-192.png" alt="" width="64" height="64">
+            <h2 id="saudacao">Olá!</h2>
+            <p id="abertura">Sou o especialista em poliuretano do Grupo Flexível. Pergunte sobre produtos, formulações, inspeções, reclamações, custos, compras, desenvolvimento e normas.</p>
+            <div class="sugestoes" id="sugestoes"></div>
+          </div>
+        </div>
+        <form class="compositor" id="form-chat">
+          <div class="compositor-caixa">
+            <textarea id="pergunta" rows="1" placeholder="Pergunte ao Agente Técnico PU…" enterkeyhint="send" maxlength="8000"></textarea>
+            <button class="btn-enviar" id="btn-enviar" type="submit" aria-label="Enviar" title="Enviar">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
+            </button>
+            <button class="btn-parar" id="btn-parar" type="button" aria-label="Parar resposta" title="Parar" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+            </button>
+          </div>
+          <p class="aviso-ia">As respostas são geradas por IA a partir das bases da empresa. Confira dados críticos antes de decidir.</p>
+        </form>
+      </main>
+
+      <!-- administração -->
+      <main class="principal admin" id="view-admin" hidden>
+        <div class="admin-cab">
+          <div>
+            <h2>Usuários com acesso</h2>
+            <p class="muted">Só entra quem está nesta lista. O login e a senha são os da rede (AD).</p>
+          </div>
+          <button class="btn btn-primario" id="btn-add-usuario">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+            Adicionar usuário
+          </button>
+        </div>
+        <div class="abas" role="tablist">
+          <button role="tab" class="aba ativa" data-aba="usuarios" aria-selected="true">Usuários</button>
+          <button role="tab" class="aba" data-aba="acessos" aria-selected="false">Registro de acessos</button>
+        </div>
+        <div id="aba-usuarios">
+          <input class="filtro" id="filtro-usuarios" type="search" placeholder="Filtrar por nome, login ou setor">
+          <div id="lista-usuarios" class="lista-usuarios"></div>
+        </div>
+        <div id="aba-acessos" hidden>
+          <div id="lista-acessos" class="lista-acessos"></div>
+        </div>
+      </main>
+    </div>
+  </section>
+
+  <!-- modal: adicionar usuário -->
+  <dialog id="dlg-usuario" class="dialogo">
+    <form method="dialog" class="dialogo-corpo" id="form-busca-ad">
+      <div class="dialogo-cab">
+        <h3>Adicionar usuário</h3>
+        <button class="btn-icone" value="cancel" aria-label="Fechar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5l13 13-1 1L5 6zm12 0l1 1L6 19l-1-1z"/></svg>
+        </button>
+      </div>
+      <label for="busca-ad">Pesquisar no AD (nome, login ou e-mail)</label>
+      <input id="busca-ad" type="search" autocomplete="off" placeholder="Ex.: maria ou maria.silva">
+      <label for="perfil-novo">Perfil</label>
+      <select id="perfil-novo">
+        <option value="usuario">Usuário</option>
+        <option value="admin">Administrador</option>
+      </select>
+      <div id="resultado-ad" class="resultado-ad"><p class="muted">Digite pelo menos 2 letras.</p></div>
+    </form>
+  </dialog>
+
+  <!-- modal: renomear / confirmar -->
+  <dialog id="dlg-confirma" class="dialogo">
+    <form method="dialog" class="dialogo-corpo">
+      <h3 id="confirma-titulo"></h3>
+      <p id="confirma-texto" class="muted"></p>
+      <input id="confirma-input" hidden maxlength="120">
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel">Cancelar</button>
+        <button class="btn btn-primario" value="ok" id="confirma-ok">Confirmar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <script src="/assets/vendor/marked.min.js"></script>
+  <script src="/assets/vendor/purify.min.js"></script>
+  <script src="/assets/app.js?v=1" type="module"></script>
+</body>
+</html>
