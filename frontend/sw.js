@@ -1,6 +1,6 @@
 /* Service worker do Agente Técnico PU: deixa o app instalável e abre rápido.
    Nunca guarda nada de /api (respostas e dados ficam só no servidor). */
-const VERSAO = 'agente-pu-v1';
+const VERSAO = 'agente-pu-v2';
 const SHELL = [
   '/',
   '/assets/app.css?v=1',
