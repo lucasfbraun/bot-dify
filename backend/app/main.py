@@ -52,7 +52,9 @@ async def _migrar_agente_unico():
             dados = {"nome": settings.APP_NAME, "descricao": "", "modo": "", "icone": "", "cor": ""}
         aid = db.criar_agente(dados["nome"], dados["descricao"], dados["icone"], dados["cor"], dados["modo"], chave,
                               "sistema", SUGESTOES_PU)
-        n = db.liberar_agente_para_todos(aid)
+        db.liberar_agente_para_todos(aid)
+        # total com acesso (os admins já entram na criação do agente)
+        n = next(a["qtd_usuarios"] for a in db.list_agentes() if a["id"] == aid)
         db.auditar("sistema", "migrar_agente", str(aid), f"{dados['nome']} liberado para {n} usuário(s)")
         log.info("migração: agente '%s' cadastrado e liberado para %d usuário(s).", dados["nome"], n)
     db.set_meta("migracao_agentes", db.agora())
