@@ -9,8 +9,9 @@ services:
       # conversor de arquivos (LibreOffice + OCR) do envio de conhecimento
       CONVERSOR_URL: http://conversor:8000
     ports:
-      # só a própria máquina acessa; o nginx (HTTPS) faz o proxy para cá
-      - "127.0.0.1:8090:8000"
+      # padrão: só a própria máquina acessa (o nginx com HTTPS faz o proxy para cá).
+      # Para um proxy em OUTRA máquina alcançar o app, defina APP_PORTA=8090 no .env (abre para a rede).
+      - "${APP_PORTA:-127.0.0.1:8090}:8000"
     volumes:
       - agente-pu-dados:/data
     depends_on:

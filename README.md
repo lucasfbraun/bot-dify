@@ -276,6 +276,10 @@ cd /opt/agente-pu-web && git pull && docker compose up -d --build
 
 O `--build` é obrigatório: o frontend é copiado para dentro da imagem, então só o `git pull` não muda o que o navegador recebe. O cadastro de usuários, os agentes e o registro de acessos ficam no volume `agente-pu-dados` e não se perdem ao atualizar. Não use `docker compose down -v`, porque o `-v` apaga esse volume.
 
+#### Porta publicada (`APP_PORTA`)
+
+Por padrão, o app fica em `127.0.0.1:8090`, acessível só pela própria máquina (o nginx local faz o HTTPS). Se o proxy HTTPS estiver em **outra máquina**, coloque `APP_PORTA=8090` no `.env` para abrir a porta para a rede, e libere no firewall **só o IP do proxy**. Nessa porta o tráfego é HTTP puro, inclusive a senha do login. **Não edite o `docker-compose.yml` no servidor**: a mudança local trava o `git pull` nas próximas atualizações.
+
 #### Atualizando para a versão com envio de conhecimento
 
 1. `cd /opt/agente-pu-web && git pull && docker compose up -d --build`. Esta versão traz um segundo container, `agente-pu-conversor` (LibreOffice + OCR). A primeira construção dele baixa uns 600 MB de pacotes e leva alguns minutos; a imagem fica com cerca de 1 GB. Confira com `docker compose ps`: devem aparecer `agente-pu-web` e `agente-pu-conversor`, os dois `healthy`.
