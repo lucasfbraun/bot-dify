@@ -1,4 +1,4 @@
-/* Agente Técnico PU · Grupo Flexível — frontend (SPA + PWA) */
+/* Agentes do Grupo Flexível — frontend (SPA + PWA) */
 
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -13,13 +13,8 @@ const ICONE = {
   lixo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 1h4v2H4V4h4zM5 7h14l-1 14H6zm4 2v10h2V9zm4 0v10h2V9z"/></svg>',
 };
 
-const SUGESTOES_PADRAO = [
-  { cat: 'Produto', txt: 'Tudo sobre o FLEXX AG 2032' },
-  { cat: 'Qualidade', txt: 'Analise a última reclamação de cliente e as inspeções do lote envolvido' },
-  { cat: 'Engenharia e custo', txt: 'Formulação e custo do FLEXX TH T190AH1' },
-  { cat: 'Compras', txt: 'De quem compramos o TDI 8020 nos últimos 12 meses e a que preço?' },
-  { cat: 'Desenvolvimento', txt: 'Já fizemos desenvolvimento com poliol vegetal?' },
-];
+const ABERTURA_PADRAO = 'Pergunte o que precisar. As respostas usam as bases da empresa liberadas para este agente.';
+const MODO_AGENTE = { 'agent-chat': 'Agente', 'advanced-chat': 'Chatflow', chat: 'Chatbot' };
 
 const RESULTADO_ACESSO = {
   ok: ['Entrou', 'ok'],
@@ -34,15 +29,22 @@ const RESULTADO_ACESSO = {
 
 const estado = {
   usuario: null,
+  agentes: [],          // agentes que a pessoa pode usar
+  agenteAtual: null,
   info: null,
   conversaAtual: null,
+  sessaoChat: 0,        // muda a cada troca de conversa/agente: respostas atrasadas da anterior são ignoradas
+  geracaoAgente: null,  // agente da resposta em andamento (para o botão parar)
   conversas: [],
   maisConversas: false,
   gerando: false,
   taskId: null,
   abort: null,
   usuarios: [],
+  adminAgentes: [],     // todos os agentes (tela de administração)
 };
+
+const rota = (caminho = '', aid = estado.agenteAtual?.id) => `/api/agentes/${aid}${caminho}`;
 
 /* ------------------------------------------------------------------ utilidades */
 class ErroApi extends Error {
@@ -93,6 +95,14 @@ function iniciais(nome, login) {
   const partes = String(nome || login || '?').trim().split(/\s+/).filter(Boolean);
   if (partes.length === 1) return partes[0].slice(0, 2).toUpperCase();
   return (partes[0][0] + partes[partes.length - 1][0]).toUpperCase();
+}
+
+/* ícone do agente: emoji do Dify sobre a cor dele, ou a inicial do nome */
+function iconeAgente(a, classe = 'agente-icone', id = '') {
+  const emoji = a?.icone || '';
+  const cor = /^#[0-9a-f]{3,8}$/i.test(a?.cor || '') ? a.cor : '';
+  const txt = emoji || iniciais(a?.nome, '?').slice(0, 1);
+  return `<span${id ? ` id="${id}"` : ''} class="${classe}${emoji ? '' : ' letra'}"${cor ? ` style="background:${cor}"` : ''} aria-hidden="true">${esc(txt)}</span>`;
 }
 
 function primeiroNome(nome, login) {
@@ -309,6 +319,10 @@ async function sair() {
   estado.usuario = null;
   estado.conversaAtual = null;
   estado.conversas = [];
+  estado.agentes = [];
+  estado.agenteAtual = null;
+  estado.usuarios = [];
+  estado.adminAgentes = [];
   history.replaceState(null, '', '/');
   mostrarLogin();
 }
@@ -325,38 +339,192 @@ async function entrarApp() {
   $('#menu-admin').hidden = u.perfil !== 'admin';
   atualizarSaudacao();
 
-  const inicial = new URLSearchParams(location.search).get('c');
+  const params = new URLSearchParams(location.search);
+  const inicial = params.get('c');
   const irParaAdmin = location.pathname === '/admin' && u.perfil === 'admin';
   limparChat();
   if (irParaAdmin) abrirAdmin();
   else mostrarChat();
 
-  carregarInfo();
-  await carregarConversas();
-  if (inicial && !irParaAdmin) abrirConversa(inicial);
+  await carregarAgentes(Number(params.get('a')) || null);
+  if (inicial && !irParaAdmin && estado.agenteAtual) abrirConversa(inicial);
 }
 
 function atualizarSaudacao() {
   const h = new Date().getHours();
   const periodo = h < 12 ? 'Bom dia' : h < 18 ? 'Boa tarde' : 'Boa noite';
   const nome = primeiroNome(estado.usuario?.nome, estado.usuario?.username);
-  $('#saudacao').textContent = nome ? `${periodo}, ${nome}!` : `${periodo}!`;
+  $('#saudacao', boasVindas).textContent = nome ? `${periodo}, ${nome}!` : `${periodo}!`;
+}
+
+/* ------------------------------------------------------------------ agentes */
+const chaveUltimoAgente = () => `agente-ultimo:${estado.usuario?.username || ''}`;
+
+function lerUltimoAgente() {
+  try { return Number(localStorage.getItem(chaveUltimoAgente())) || null; } catch { return null; }
+}
+
+function guardarUltimoAgente(id) {
+  try { localStorage.setItem(chaveUltimoAgente(), String(id)); } catch { /* sem armazenamento */ }
+}
+
+/* Busca os agentes liberados e escolhe qual abrir: o pedido, o atual, o último usado ou o primeiro da lista. */
+async function carregarAgentes(preferido = null) {
+  try {
+    estado.agentes = (await getJSON('/api/agentes')).itens;
+  } catch (e) {
+    if (e.status !== 401) toast(e.message);
+    return;
+  }
+  const achar = (id) => estado.agentes.find((a) => a.id === id);
+  const escolhido = achar(preferido) || achar(estado.agenteAtual?.id) || achar(lerUltimoAgente()) || estado.agentes[0] || null;
+  desenharSeletorAgentes();
+  if (!escolhido) {
+    estado.agenteAtual = null;
+    mostrarSemAgente();
+    return;
+  }
+  if (escolhido.id !== estado.agenteAtual?.id) {
+    await selecionarAgente(escolhido, { manterConversa: true });
+  } else {
+    estado.agenteAtual = escolhido;  // nome/ícone podem ter mudado na administração
+    aplicarAgenteNaTela();
+  }
+}
+
+function desenharSeletorAgentes() {
+  const sel = $('#sel-agente');
+  sel.innerHTML = '';
+  for (const a of estado.agentes) {
+    const o = document.createElement('option');
+    o.value = String(a.id);
+    o.textContent = a.nome;
+    sel.appendChild(o);
+  }
+  $('#seletor-agente').hidden = estado.agentes.length === 0;
+  sel.disabled = estado.agentes.length < 2;
+
+  const rapidos = $('#agentes-rapidos', boasVindas);
+  rapidos.innerHTML = '';
+  rapidos.hidden = estado.agentes.length < 2;
+  for (const a of estado.agentes) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'agente-rapido';
+    b.dataset.id = String(a.id);
+    b.title = a.descricao || a.nome;
+    b.innerHTML = `${iconeAgente(a)}<span>${esc(a.nome)}</span>`;
+    b.addEventListener('click', () => trocarAgente(a.id));
+    rapidos.appendChild(b);
+  }
+}
+
+function aplicarAgenteNaTela() {
+  const a = estado.agenteAtual;
+  const nome = a?.nome || 'Agente';
+  $('#sel-agente').value = a ? String(a.id) : '';
+  $('#sel-agente-icone').outerHTML = iconeAgente(a, 'agente-icone', 'sel-agente-icone');
+  $('#topo-titulo').textContent = nome;
+  document.title = `${nome} · Grupo Flexível`;
+  $('#pergunta').placeholder = `Pergunte ao ${nome}…`;
+  $('#pergunta').disabled = !a;
+  $('#btn-nova').hidden = !a;
+  $('#busca-conversa').hidden = !a;
+  for (const b of $$('.agente-rapido', boasVindas)) b.classList.toggle('ativo', Number(b.dataset.id) === a?.id);
+  desenharAbertura();
+  ajustarAltura();
+}
+
+function selecionarAgente(a, { manterConversa = false } = {}) {
+  estado.agenteAtual = a;
+  estado.info = null;
+  estado.conversas = [];
+  guardarUltimoAgente(a.id);
+  if (!manterConversa) limparChat();
+  aplicarAgenteNaTela();
+  atualizarURL();
+  desenharConversas();
+  carregarInfo();
+  return carregarConversas();
+}
+
+async function trocarAgente(id) {
+  if (id === estado.agenteAtual?.id) return;
+  const a = estado.agentes.find((x) => x.id === id);
+  if (!a) return;
+  pararGeracao(true);
+  fecharLateral();
+  mostrarChat();
+  await selecionarAgente(a);
+  if (!ehMobile()) $('#pergunta').focus();
+}
+
+/* O admin tirou o acesso (ou desativou o agente) com a tela aberta: recarrega a lista e segue no que sobrou. */
+let recarregandoAgentes = null;
+function acessoAoAgentePerdido(msg) {
+  if (recarregandoAgentes) return recarregandoAgentes;
+  toast(msg || 'Você não tem mais acesso a este agente.', 5000);
+  pararGeracao(true);
+  estado.agenteAtual = null;
+  limparChat();
+  recarregandoAgentes = carregarAgentes().finally(() => { recarregandoAgentes = null; });
+  return recarregandoAgentes;
+}
+
+function mostrarSemAgente() {
+  pararGeracao(true);
+  limparChat();
+  estado.conversas = [];
+  desenharConversas();
+  $('#sel-agente-icone').outerHTML = iconeAgente(null, 'agente-icone', 'sel-agente-icone');
+  $('#topo-titulo').textContent = 'Sem agente liberado';
+  document.title = 'Grupo Flexível';
+  $('#pergunta').placeholder = 'Nenhum agente liberado para você';
+  $('#pergunta').disabled = true;
+  $('#btn-nova').hidden = true;
+  $('#busca-conversa').hidden = true;
+  $('#abertura', boasVindas).textContent = estado.usuario?.perfil === 'admin'
+    ? 'Nenhum agente disponível para você. Cadastre ou marque um agente em Administração > Agentes.'
+    : 'Nenhum agente foi liberado para você ainda. Peça a liberação ao administrador.';
+  $('#sugestoes', boasVindas).innerHTML = '';
+  atualizarURL();
+  ajustarAltura();
+}
+
+function atualizarURL() {
+  if (location.pathname === '/admin') return;
+  const p = new URLSearchParams();
+  if (estado.agenteAtual && estado.agentes.length > 1) p.set('a', String(estado.agenteAtual.id));
+  if (estado.conversaAtual) p.set('c', estado.conversaAtual);
+  const q = p.toString();
+  history.replaceState(null, '', q ? `/?${q}` : '/');
 }
 
 async function carregarInfo() {
+  const a = estado.agenteAtual;
+  if (!a) return;
+  let info = null;
   try {
-    estado.info = await getJSON('/api/agente/info');
-  } catch {
-    estado.info = null;
+    info = await getJSON(rota('/info', a.id));
+  } catch (e) {
+    if (e.status === 403 && estado.agenteAtual?.id === a.id) { acessoAoAgentePerdido(e.message); return; }
   }
-  if (estado.info?.abertura) $('#abertura').textContent = estado.info.abertura.replace(/[*_#`]/g, '').trim();
+  if (estado.agenteAtual?.id !== a.id) return;  // trocou de agente enquanto carregava
+  estado.info = info;
+  desenharAbertura();
+}
+
+function desenharAbertura() {
+  const a = estado.agenteAtual;
+  if (!a) return;
+  const texto = estado.info?.abertura || a.descricao || ABERTURA_PADRAO;
+  $('#abertura', boasVindas).textContent = texto.replace(/[*_#`]/g, '').trim();
   desenharSugestoes();
 }
 
 function desenharSugestoes() {
-  const box = $('#sugestoes');
-  const doDify = (estado.info?.sugestoes || []).filter(Boolean).map((t) => ({ cat: '', txt: t }));
-  const lista = doDify.length ? doDify : SUGESTOES_PADRAO;
+  const box = $('#sugestoes', boasVindas);
+  const lista = (estado.info?.sugestoes || []).filter((s) => s && s.txt);
   box.innerHTML = '';
   for (const s of lista.slice(0, 6)) {
     const b = document.createElement('button');
@@ -394,12 +562,16 @@ function fecharLateral() {
 
 /* ------------------------------------------------------------------ conversas */
 async function carregarConversas(mais = false) {
+  const a = estado.agenteAtual;
+  if (!a) return;
   try {
     const ultimo = mais && estado.conversas.length ? estado.conversas[estado.conversas.length - 1].id : null;
-    const r = await getJSON(`/api/conversas${ultimo ? `?last_id=${encodeURIComponent(ultimo)}` : ''}`);
+    const r = await getJSON(rota(`/conversas${ultimo ? `?last_id=${encodeURIComponent(ultimo)}` : ''}`, a.id));
+    if (estado.agenteAtual?.id !== a.id) return;  // trocou de agente enquanto carregava
     estado.conversas = mais ? estado.conversas.concat(r.itens) : r.itens;
     estado.maisConversas = r.mais;
   } catch (e) {
+    if (e.status === 403 && estado.agenteAtual?.id === a.id) { acessoAoAgentePerdido(e.message); return; }
     if (e.status !== 401) toast(e.message);
   }
   desenharConversas();
@@ -424,7 +596,8 @@ function desenharConversas() {
   nav.innerHTML = '';
   const lista = estado.conversas.filter((c) => !filtro || (c.nome || '').toLowerCase().includes(filtro));
   if (!lista.length) {
-    nav.innerHTML = `<p class="muted" style="padding:8px 10px;font-size:14px">${filtro ? 'Nenhuma conversa encontrada.' : 'Suas conversas aparecem aqui.'}</p>`;
+    const vazio = filtro ? 'Nenhuma conversa encontrada.' : estado.agenteAtual ? 'Suas conversas com este agente aparecem aqui.' : '';
+    nav.innerHTML = vazio ? `<p class="muted" style="padding:8px 10px;font-size:14px">${vazio}</p>` : '';
   }
   let grupoAtual = '';
   for (const c of lista) {
@@ -465,7 +638,7 @@ async function renomearConversa(c) {
   const nome = await confirmar({ titulo: 'Renomear conversa', texto: '', input: true, valor: c.nome, ok: 'Salvar' });
   if (nome === null) return;
   try {
-    const r = await enviarJSON(`/api/conversas/${encodeURIComponent(c.id)}`, 'PATCH', { nome: nome.trim() });
+    const r = await enviarJSON(rota(`/conversas/${encodeURIComponent(c.id)}`), 'PATCH', { nome: nome.trim() });
     c.nome = r.nome || nome;
     desenharConversas();
   } catch (e) {
@@ -477,7 +650,7 @@ async function apagarConversa(c) {
   const ok = await confirmar({ titulo: 'Apagar conversa?', texto: `"${c.nome}" será apagada do seu histórico.`, ok: 'Apagar' });
   if (ok === null) return;
   try {
-    await api(`/api/conversas/${encodeURIComponent(c.id)}`, { metodo: 'DELETE' });
+    await api(rota(`/conversas/${encodeURIComponent(c.id)}`), { metodo: 'DELETE' });
     estado.conversas = estado.conversas.filter((x) => x.id !== c.id);
     if (estado.conversaAtual === c.id) novaConversa();
     desenharConversas();
@@ -489,6 +662,7 @@ async function apagarConversa(c) {
 
 function limparChat() {
   estado.conversaAtual = null;
+  estado.sessaoChat += 1;
   const box = $('#mensagens');
   box.innerHTML = '';
   box.appendChild(boasVindas);
@@ -499,7 +673,7 @@ function limparChat() {
 function novaConversa(focar = true) {
   pararGeracao(true);
   limparChat();
-  history.replaceState(null, '', '/');
+  atualizarURL();
   fecharLateral();
   mostrarChat();
   if (focar && !ehMobile()) $('#pergunta').focus();
@@ -509,15 +683,19 @@ async function abrirConversa(id, primeiroId = null) {
   pararGeracao(true);
   fecharLateral();
   const box = $('#mensagens');
+  const a = estado.agenteAtual;
+  if (!a) return;
   if (!primeiroId) {
     estado.conversaAtual = id;
-    history.replaceState(null, '', `/?c=${encodeURIComponent(id)}`);
+    estado.sessaoChat += 1;
+    atualizarURL();
     marcarConversaAtiva();
     box.innerHTML = '<div class="msg msg-bot"><div class="conteudo"><span class="status"><span class="spinner"></span>Carregando a conversa…</span></div></div>';
   }
+  const sessao = estado.sessaoChat;
   try {
-    const r = await getJSON(`/api/conversas/${encodeURIComponent(id)}/mensagens${primeiroId ? `?first_id=${encodeURIComponent(primeiroId)}` : ''}`);
-    if (estado.conversaAtual !== id) return;
+    const r = await getJSON(rota(`/conversas/${encodeURIComponent(id)}/mensagens${primeiroId ? `?first_id=${encodeURIComponent(primeiroId)}` : ''}`, a.id));
+    if (estado.sessaoChat !== sessao || estado.conversaAtual !== id) return;
     const itens = [...r.itens].sort((a, b) => (a.criado || 0) - (b.criado || 0));
     const frag = document.createDocumentFragment();
     if (r.mais && itens.length) {
@@ -532,7 +710,7 @@ async function abrirConversa(id, primeiroId = null) {
       frag.appendChild(bolhaUsuario(m.pergunta));
       const bot = bolhaBot();
       renderMarkdown(bot.md, m.resposta);
-      finalizarBot(bot, { id: m.id, texto: m.resposta, avaliacao: m.avaliacao, fontes: m.fontes });
+      finalizarBot(bot, { id: m.id, texto: m.resposta, avaliacao: m.avaliacao, fontes: m.fontes, aid: a.id });
       frag.appendChild(bot.raiz);
     }
     if (primeiroId) {
@@ -544,7 +722,8 @@ async function abrirConversa(id, primeiroId = null) {
       rolarFim(true);
     }
   } catch (e) {
-    if (e.status === 401) return;
+    if (e.status === 401 || estado.sessaoChat !== sessao) return;
+    if (e.status === 403) { acessoAoAgentePerdido(e.message); return; }
     if (!primeiroId) {
       box.innerHTML = '';
       box.appendChild(erroBox(e.status === 404 ? 'Conversa não encontrada.' : e.message));
@@ -581,7 +760,7 @@ function erroBox(msg) {
   return d;
 }
 
-function finalizarBot(bot, { id, texto, avaliacao, fontes }) {
+function finalizarBot(bot, { id, texto, avaliacao, fontes, aid }) {
   if (fontes && fontes.length) {
     const det = document.createElement('details');
     det.className = 'fontes';
@@ -612,7 +791,7 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes }) {
     const ligado = b.classList.contains('on');
     const nova = ligado ? null : b.dataset.a;
     try {
-      await enviarJSON(`/api/mensagens/${encodeURIComponent(id)}/feedback`, 'POST', { avaliacao: nova });
+      await enviarJSON(rota(`/mensagens/${encodeURIComponent(id)}/feedback`, aid), 'POST', { avaliacao: nova });
       for (const x of $$('[data-a="like"],[data-a="dislike"]', acoes)) x.classList.toggle('on', x.dataset.a === nova);
       if (nova) toast(nova === 'like' ? 'Obrigado pela avaliação!' : 'Obrigado! Vamos usar isso para melhorar o agente.');
     } catch (e) {
@@ -634,7 +813,7 @@ function ajustarAltura() {
   ta.style.height = 'auto';
   // vazio ou ainda oculto: deixa a altura natural (rows=1) para não cortar o placeholder
   if (ta.value && ta.scrollHeight) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  $('#btn-enviar').disabled = !ta.value.trim() || estado.gerando;
+  $('#btn-enviar').disabled = !ta.value.trim() || estado.gerando || !estado.agenteAtual;
 }
 
 function modoGerando(sim) {
@@ -648,17 +827,21 @@ async function pararGeracao(silencioso = false) {
   if (!estado.gerando) return;
   const task = estado.taskId;
   const ctrl = estado.abort;
-  if (task) {
-    try { await api(`/api/chat/${encodeURIComponent(task)}/parar`, { metodo: 'POST' }); } catch { /* segue */ }
+  const aid = estado.geracaoAgente;
+  if (silencioso) ctrl?.abort();  // troca de conversa/agente: corta já e avisa o Dify em segundo plano
+  if (task && aid) {
+    const pedido = api(rota(`/chat/${encodeURIComponent(task)}/parar`, aid), { metodo: 'POST' }).catch(() => { /* segue */ });
+    if (!silencioso) await pedido;
   }
   // se o Dify não encerrar o stream sozinho, corta do lado de cá
-  setTimeout(() => ctrl?.abort(), silencioso ? 0 : 2500);
+  if (!silencioso) setTimeout(() => ctrl?.abort(), 2500);
 }
 
 async function enviarPergunta() {
   const ta = $('#pergunta');
   const pergunta = ta.value.trim();
-  if (!pergunta || estado.gerando) return;
+  const agente = estado.agenteAtual;
+  if (!pergunta || estado.gerando || !agente) return;
   ta.value = '';
   ajustarAltura();
   if (ehMobile()) ta.blur();
@@ -678,9 +861,12 @@ async function enviarPergunta() {
   const ctrl = new AbortController();
   estado.abort = ctrl;
   estado.taskId = null;
+  estado.geracaoAgente = agente.id;
   modoGerando(true);
 
   const conversaEnviada = estado.conversaAtual;
+  const sessao = estado.sessaoChat;
+  const mesmaTela = () => estado.sessaoChat === sessao;
   let texto = '';
   let messageId = null;
   let fontes = [];
@@ -707,7 +893,7 @@ async function enviarPergunta() {
   };
 
   try {
-    const r = await api('/api/chat', { metodo: 'POST', corpo: { pergunta, conversation_id: conversaEnviada }, sinal: ctrl.signal });
+    const r = await api(rota('/chat', agente.id), { metodo: 'POST', corpo: { pergunta, conversation_id: conversaEnviada }, sinal: ctrl.signal });
     const leitor = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -727,9 +913,9 @@ async function enviarPergunta() {
             case 'inicio':
               estado.taskId = ev.task_id;
               messageId = ev.message_id || messageId;
-              if (!estado.conversaAtual && ev.conversation_id) {
+              if (mesmaTela() && !estado.conversaAtual && ev.conversation_id) {
                 estado.conversaAtual = ev.conversation_id;
-                history.replaceState(null, '', `/?c=${encodeURIComponent(ev.conversation_id)}`);
+                atualizarURL();
               }
               break;
             case 'texto':
@@ -760,6 +946,7 @@ async function enviarPergunta() {
     }
   } catch (e) {
     if (e.name !== 'AbortError') erro = e.status === 401 ? null : e.message;
+    if (e.status === 403 && mesmaTela()) acessoAoAgentePerdido(e.message);
   }
 
   status.remove();
@@ -770,18 +957,23 @@ async function enviarPergunta() {
     bot.md.insertAdjacentHTML('beforeend', '<p class="muted"><em>(resposta interrompida)</em></p>');
   }
   if (erro) bot.conteudo.appendChild(erroBox(erro));
-  finalizarBot(bot, { id: messageId, texto, fontes });
-  estado.taskId = null;
-  estado.abort = null;
-  modoGerando(false);
+  finalizarBot(bot, { id: messageId, texto, fontes, aid: agente.id });
+  // se outra resposta já começou (troca rápida de conversa), não mexe no estado dela
+  if (estado.abort === ctrl) {
+    estado.taskId = null;
+    estado.abort = null;
+    estado.geracaoAgente = null;
+    modoGerando(false);
+  }
+  if (!mesmaTela()) return;
   rolarFim();
 
-  if (estado.usuario) {
+  if (estado.usuario && estado.agenteAtual?.id === agente.id) {
     const nova = !conversaEnviada && estado.conversaAtual;
     await carregarConversas();
     marcarConversaAtiva();
     // o nome automático da conversa costuma chegar um pouco depois
-    if (nova) setTimeout(() => carregarConversas(), 3500);
+    if (nova) setTimeout(() => { if (estado.agenteAtual?.id === agente.id) carregarConversas(); }, 3500);
   }
 }
 
@@ -790,7 +982,10 @@ function mostrarChat() {
   $('#view-admin').hidden = true;
   $('#view-chat').hidden = false;
   $('#lateral').hidden = false;
-  if (location.pathname === '/admin') history.replaceState(null, '', estado.conversaAtual ? `/?c=${encodeURIComponent(estado.conversaAtual)}` : '/');
+  if (location.pathname === '/admin') {
+    history.replaceState(null, '', '/');
+    atualizarURL();
+  }
 }
 
 function abrirAdmin() {
@@ -802,7 +997,6 @@ function abrirAdmin() {
   $('#view-admin').hidden = false;
   history.replaceState(null, '', '/admin');
   trocarAba('usuarios');
-  carregarUsuarios();
 }
 
 function trocarAba(aba) {
@@ -812,8 +1006,11 @@ function trocarAba(aba) {
     b.setAttribute('aria-selected', String(ativa));
   }
   $('#aba-usuarios').hidden = aba !== 'usuarios';
+  $('#aba-agentes').hidden = aba !== 'agentes';
   $('#aba-acessos').hidden = aba !== 'acessos';
-  if (aba === 'acessos') carregarAcessos();
+  if (aba === 'usuarios') carregarUsuarios();
+  else if (aba === 'agentes') carregarAgentesAdmin();
+  else if (aba === 'acessos') carregarAcessos();
 }
 
 /* ------------------------------------------------------------------ administração */
@@ -821,7 +1018,9 @@ async function carregarUsuarios() {
   const lista = $('#lista-usuarios');
   if (!estado.usuarios.length) lista.innerHTML = '<p class="muted">Carregando…</p>';
   try {
-    estado.usuarios = (await getJSON('/api/admin/usuarios')).itens;
+    const [usuarios, agentes] = await Promise.all([getJSON('/api/admin/usuarios'), getJSON('/api/admin/agentes')]);
+    estado.usuarios = usuarios.itens;
+    estado.adminAgentes = agentes.itens;
   } catch (e) {
     lista.innerHTML = '';
     lista.appendChild(erroBox(e.message));
@@ -854,6 +1053,7 @@ function desenharUsuarios() {
         <div class="sub">${esc(u.departamento || '—')}${u.cargo ? ` · ${esc(u.cargo)}` : ''}</div>
         <div class="sub">Último acesso: ${esc(dataHora(u.ultimo_acesso))} · ${Number(u.qtd_acessos || 0)}×</div>
       </div>
+      ${botaoAgentesUsuario(u)}
       <select aria-label="Perfil de ${esc(u.username)}">
         <option value="usuario"${u.perfil === 'usuario' ? ' selected' : ''}>Usuário</option>
         <option value="admin"${u.perfil === 'admin' ? ' selected' : ''}>Administrador</option>
@@ -861,6 +1061,7 @@ function desenharUsuarios() {
       <label class="chave"><input type="checkbox"${u.ativo ? ' checked' : ''}><span>${u.ativo ? 'Ativo' : 'Inativo'}</span></label>
       <button class="btn-icone rem" aria-label="Remover ${esc(u.username)}" title="Remover acesso">${ICONE.lixo}</button>`;
 
+    $('.btn-agentes', linha).addEventListener('click', () => abrirAgentesUsuario(u));
     $('select', linha).addEventListener('change', async (ev) => {
       const perfil = ev.target.value;
       if (eu && perfil !== 'admin') {
@@ -872,7 +1073,7 @@ function desenharUsuarios() {
     $('input[type=checkbox]', linha).addEventListener('change', async (ev) => {
       const ativo = ev.target.checked;
       if (!ativo) {
-        const ok = await confirmar({ titulo: 'Desativar acesso?', texto: `${u.nome || u.username} não conseguirá mais entrar no Agente Técnico PU (o histórico é mantido).`, ok: 'Desativar' });
+        const ok = await confirmar({ titulo: 'Desativar acesso?', texto: `${u.nome || u.username} não conseguirá mais entrar em nenhum agente (o histórico é mantido).`, ok: 'Desativar' });
         if (ok === null) { ev.target.checked = true; return; }
       }
       await alterarUsuario(u, { ativo }, () => { ev.target.checked = !ativo; });
@@ -896,7 +1097,7 @@ function desenharUsuarios() {
 async function alterarUsuario(u, campos, desfazer) {
   try {
     await enviarJSON(`/api/admin/usuarios/${encodeURIComponent(u.username)}`, 'PATCH', campos);
-    toast('Alteração salva.');
+    toast(campos.perfil === 'admin' ? 'Alteração salva. Administradores recebem todos os agentes.' : 'Alteração salva.');
     if (u.username === estado.usuario.username && campos.perfil) {
       estado.usuario.perfil = campos.perfil;
       $('#menu-admin').hidden = campos.perfil !== 'admin';
@@ -906,6 +1107,209 @@ async function alterarUsuario(u, campos, desfazer) {
   } catch (e) {
     desfazer();
     toast(e.message, 4500);
+  }
+}
+
+/* ---- agentes de cada usuário ---- */
+function botaoAgentesUsuario(u) {
+  const total = estado.adminAgentes.length;
+  const nomes = estado.adminAgentes.filter((a) => u.agentes.includes(a.id)).map((a) => a.nome);
+  const texto = !total ? 'Sem agentes cadastrados'
+    : !nomes.length ? 'Nenhum agente'
+      : nomes.length === total ? `Todos os agentes (${total})`
+        : nomes.length === 1 ? nomes[0] : `${nomes.length} de ${total} agentes`;
+  return `<button type="button" class="btn-agentes${nomes.length ? '' : ' vazio'}" title="${esc(nomes.join(', ') || 'Nenhum agente liberado')}"
+    aria-label="Agentes de ${esc(u.username)}: ${esc(texto)}"${total ? '' : ' disabled'}>${esc(texto)}</button>`;
+}
+
+/* lista de caixinhas com todos os agentes, marcando os ids informados */
+function desenharChecksAgentes(box, marcados) {
+  box.innerHTML = '';
+  if (!estado.adminAgentes.length) {
+    box.innerHTML = '<p class="muted">Nenhum agente cadastrado. Cadastre na aba Agentes.</p>';
+    return;
+  }
+  for (const a of estado.adminAgentes) {
+    const l = document.createElement('label');
+    l.className = `check-agente${a.ativo ? '' : ' inativo'}`;
+    l.innerHTML = `<input type="checkbox" value="${a.id}"${marcados.includes(a.id) ? ' checked' : ''}>${iconeAgente(a)}
+      <span class="check-texto"><strong>${esc(a.nome)}${a.ativo ? '' : ' <span class="selo selo-off">INATIVO</span>'}</strong>
+      ${a.descricao ? `<small>${esc(a.descricao)}</small>` : ''}</span>`;
+    box.appendChild(l);
+  }
+}
+
+const idsMarcados = (box) => $$('input[type=checkbox]:checked', box).map((i) => Number(i.value));
+
+function abrirAgentesUsuario(u) {
+  const dlg = $('#dlg-agentes-usuario');
+  $('#agentes-usuario-titulo').textContent = `Agentes de ${u.nome || u.username}`;
+  $('#agentes-usuario-dica').textContent = u.perfil === 'admin'
+    ? 'Administradores recebem todos os agentes, inclusive os cadastrados depois. Desmarque os que esta pessoa não quer usar no chat.'
+    : 'Marque os agentes que esta pessoa pode usar. Tirar a marca corta o acesso na hora.';
+  const box = $('#agentes-usuario-lista');
+  desenharChecksAgentes(box, u.agentes);
+  dlg.returnValue = '';
+  dlg.addEventListener('close', async () => {
+    if (dlg.returnValue !== 'ok') return;
+    const agentes = idsMarcados(box);
+    try {
+      const r = await enviarJSON(`/api/admin/usuarios/${encodeURIComponent(u.username)}/agentes`, 'PUT', { agentes });
+      u.agentes = r.agentes;
+      desenharUsuarios();
+      toast('Agentes atualizados.');
+      if (u.username === estado.usuario.username) carregarAgentes();
+    } catch (e) {
+      toast(e.message, 4500);
+    }
+  }, { once: true });
+  dlg.showModal();
+}
+
+/* ---- aba Agentes ---- */
+async function carregarAgentesAdmin() {
+  const lista = $('#lista-agentes');
+  if (!estado.adminAgentes.length) lista.innerHTML = '<p class="muted">Carregando…</p>';
+  try {
+    estado.adminAgentes = (await getJSON('/api/admin/agentes')).itens;
+  } catch (e) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(e.message));
+    return;
+  }
+  desenharAgentesAdmin();
+}
+
+function desenharAgentesAdmin() {
+  const lista = $('#lista-agentes');
+  lista.innerHTML = '';
+  if (!estado.adminAgentes.length) {
+    lista.innerHTML = '<p class="muted">Nenhum agente cadastrado. Clique em <b>Adicionar agente</b> e cole a chave de API de um app de conversa do Dify.</p>';
+    return;
+  }
+  for (const a of estado.adminAgentes) {
+    const linha = document.createElement('div');
+    linha.className = `agente-linha${a.ativo ? '' : ' inativo'}`;
+    const qtd = Number(a.qtd_usuarios || 0);
+    linha.innerHTML = `
+      ${iconeAgente(a, 'agente-icone grande')}
+      <div class="info">
+        <div class="nome">${esc(a.nome)}${MODO_AGENTE[a.modo] ? `<span class="selo selo-modo">${esc(MODO_AGENTE[a.modo])}</span>` : ''}</div>
+        <div class="sub">${esc(a.descricao || 'Sem descrição')}</div>
+        <div class="sub mono">${esc(a.chave_mascarada)}</div>
+      </div>
+      <div class="qtd">${qtd} ${qtd === 1 ? 'usuário' : 'usuários'}</div>
+      <label class="chave"><input type="checkbox"${a.ativo ? ' checked' : ''}><span>${a.ativo ? 'Ativo' : 'Inativo'}</span></label>
+      <button class="btn-icone ed" aria-label="Editar ${esc(a.nome)}" title="Editar">${ICONE.editar}</button>
+      <button class="btn-icone rem" aria-label="Remover ${esc(a.nome)}" title="Remover agente">${ICONE.lixo}</button>`;
+
+    $('input[type=checkbox]', linha).addEventListener('change', async (ev) => {
+      const ativo = ev.target.checked;
+      if (!ativo) {
+        const ok = await confirmar({ titulo: 'Desativar agente?', texto: `"${a.nome}" some do chat de todos. As liberações são mantidas para quando você reativar.`, ok: 'Desativar' });
+        if (ok === null) { ev.target.checked = true; return; }
+      }
+      try {
+        await enviarJSON(`/api/admin/agentes/${a.id}`, 'PATCH', { ativo });
+        toast(ativo ? 'Agente ativado.' : 'Agente desativado.');
+        carregarAgentesAdmin();
+        carregarAgentes();
+      } catch (e) {
+        ev.target.checked = !ativo;
+        toast(e.message, 4500);
+      }
+    });
+    $('.ed', linha).addEventListener('click', () => abrirDialogoAgente(a));
+    $('.rem', linha).addEventListener('click', async () => {
+      const ok = await confirmar({
+        titulo: 'Remover agente?',
+        texto: `"${a.nome}" sai da plataforma e ${qtd} ${qtd === 1 ? 'pessoa perde' : 'pessoas perdem'} o acesso. As conversas continuam guardadas no Dify; se cadastrar a mesma chave de novo, elas voltam a aparecer.`,
+        ok: 'Remover',
+      });
+      if (ok === null) return;
+      try {
+        await api(`/api/admin/agentes/${a.id}`, { metodo: 'DELETE' });
+        toast('Agente removido.');
+        carregarAgentesAdmin();
+        carregarAgentes();
+      } catch (e) {
+        toast(e.message, 4500);
+      }
+    });
+    lista.appendChild(linha);
+  }
+}
+
+/* sugestões: uma por linha, "Categoria | pergunta" */
+function sugestoesParaTexto(lista) {
+  return (lista || []).map((s) => (s.cat ? `${s.cat} | ${s.txt}` : s.txt)).join('\n');
+}
+
+function textoParaSugestoes(texto) {
+  return texto.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 12).map((l) => {
+    const i = l.indexOf('|');
+    if (i < 0) return { cat: '', txt: l.slice(0, 300) };
+    return { cat: l.slice(0, i).trim().slice(0, 40), txt: l.slice(i + 1).trim().slice(0, 300) };
+  }).filter((s) => s.txt);
+}
+
+let agenteEditando = null;
+
+function abrirDialogoAgente(a = null) {
+  agenteEditando = a;
+  const editar = !!a;
+  $('#agente-titulo').textContent = editar ? `Editar ${a.nome}` : 'Adicionar agente';
+  $('#agente-dica-chave').hidden = editar;
+  $('#agente-chave-rotulo').textContent = editar ? `Trocar a chave da API (atual: ${a.chave_mascarada})` : 'Chave da API do Dify';
+  $('#agente-chave').value = '';
+  $('#agente-chave').placeholder = editar ? 'Deixe em branco para manter a chave atual' : 'app-…';
+  $('#agente-nome').value = editar ? a.nome : '';
+  $('#agente-nome').placeholder = editar ? '' : 'Em branco: usa o nome do app no Dify';
+  $('#agente-campos-edicao').hidden = !editar;
+  $('#agente-descricao').value = editar ? a.descricao || '' : '';
+  $('#agente-sugestoes').value = editar ? sugestoesParaTexto(a.sugestoes) : '';
+  $('#agente-erro').hidden = true;
+  $('#agente-salvar').disabled = false;
+  $('#agente-salvar').textContent = editar ? 'Salvar' : 'Verificar e cadastrar';
+  $('#dlg-agente').showModal();
+  setTimeout(() => (editar ? $('#agente-nome') : $('#agente-chave')).focus(), 30);
+}
+
+async function salvarAgente(e) {
+  e.preventDefault();
+  if (e.submitter?.value === 'cancel') { $('#dlg-agente').close(); return; }
+  const erro = $('#agente-erro');
+  const btn = $('#agente-salvar');
+  const a = agenteEditando;
+  const chave = $('#agente-chave').value.trim();
+  const nome = $('#agente-nome').value.trim();
+  erro.hidden = true;
+  let corpo;
+  if (a) {
+    if (!nome) { erro.textContent = 'Informe o nome do agente.'; erro.hidden = false; return; }
+    corpo = { nome, descricao: $('#agente-descricao').value.trim(), sugestoes: textoParaSugestoes($('#agente-sugestoes').value) };
+    if (chave) corpo.chave = chave;
+  } else {
+    if (!chave) { erro.textContent = 'Cole a chave da API do Dify (começa com app-).'; erro.hidden = false; return; }
+    corpo = { chave, nome };
+  }
+  btn.disabled = true;
+  const rotulo = btn.textContent;
+  btn.textContent = chave ? 'Conferindo no Dify…' : 'Salvando…';
+  try {
+    const r = a
+      ? await enviarJSON(`/api/admin/agentes/${a.id}`, 'PATCH', corpo)
+      : await enviarJSON('/api/admin/agentes', 'POST', corpo);
+    $('#dlg-agente').close();
+    toast(a ? 'Agente atualizado.' : `"${r.nome}" cadastrado. Administradores já têm acesso; libere para os demais na aba Usuários.`, 6000);
+    carregarAgentesAdmin();
+    carregarAgentes();
+  } catch (err) {
+    erro.textContent = err.message;
+    erro.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = rotulo;
   }
 }
 
@@ -933,9 +1337,24 @@ async function carregarAcessos() {
 let buscaTimer;
 let buscaSeq = 0;
 
+function ajustarAgentesNovo() {
+  const admin = $('#perfil-novo').value === 'admin';
+  const box = $('#agentes-novo');
+  for (const i of $$('input', box)) {
+    i.disabled = admin;
+    if (admin) i.checked = true;
+  }
+  $('#agentes-novo-dica').textContent = admin
+    ? 'Administradores recebem todos os agentes. Depois dá para desmarcar algum na lista de usuários.'
+    : 'Marque os agentes que a pessoa vai poder usar.';
+}
+
 function abrirDialogoUsuario() {
   $('#busca-ad').value = '';
   $('#perfil-novo').value = 'usuario';
+  // com um agente só, já vem marcado; com vários, o admin escolhe
+  desenharChecksAgentes($('#agentes-novo'), estado.adminAgentes.length === 1 ? [estado.adminAgentes[0].id] : []);
+  ajustarAgentesNovo();
   $('#resultado-ad').innerHTML = '<p class="muted">Digite pelo menos 2 letras.</p>';
   $('#dlg-usuario').showModal();
   setTimeout(() => $('#busca-ad').focus(), 30);
@@ -966,8 +1385,14 @@ async function buscarAD() {
       b.addEventListener('click', async () => {
         b.disabled = true;
         b.textContent = 'Liberando…';
+        const perfil = $('#perfil-novo').value;
+        const agentes = idsMarcados($('#agentes-novo'));
+        if (perfil !== 'admin' && !agentes.length && estado.adminAgentes.length) {
+          const ok = await confirmar({ titulo: 'Liberar sem nenhum agente?', texto: `${a.nome || a.username} vai conseguir entrar, mas não vai ter nenhum agente para conversar até você marcar um.`, ok: 'Liberar assim' });
+          if (ok === null) { b.disabled = false; b.textContent = 'Liberar acesso'; return; }
+        }
         try {
-          await enviarJSON('/api/admin/usuarios', 'POST', { usuario: a.username, perfil: $('#perfil-novo').value });
+          await enviarJSON('/api/admin/usuarios', 'POST', { usuario: a.username, perfil, agentes });
           b.className = 'btn btn-texto';
           b.textContent = 'Liberado ✓';
           toast(`${a.nome || a.username} agora tem acesso.`);
@@ -1063,7 +1488,11 @@ function ligarEventos() {
     seguirFim = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   }, { passive: true });
 
+  $('#sel-agente').addEventListener('change', (e) => trocarAgente(Number(e.target.value)));
   $('#btn-add-usuario').addEventListener('click', abrirDialogoUsuario);
+  $('#perfil-novo').addEventListener('change', ajustarAgentesNovo);
+  $('#btn-add-agente').addEventListener('click', () => abrirDialogoAgente());
+  $('#form-agente').addEventListener('submit', salvarAgente);
   for (const b of $$('.aba')) b.addEventListener('click', () => trocarAba(b.dataset.aba));
   $('#filtro-usuarios').addEventListener('input', desenharUsuarios);
   $('#busca-ad').addEventListener('input', () => {

@@ -1,4 +1,5 @@
-"""Banco local (SQLite) com o cadastro de quem pode acessar e o registro de acessos."""
+"""Banco local (SQLite) com o cadastro de quem pode acessar, os agentes do Dify e o registro de acessos."""
+import json
 import os
 import sqlite3
 import threading
@@ -41,6 +42,30 @@ CREATE TABLE IF NOT EXISTS auditoria (
     detalhe  TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_acessos_quando ON acessos(quando);
+-- agentes (apps de chat do Dify); a chave app-... nunca sai do servidor
+CREATE TABLE IF NOT EXISTS agentes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    nome          TEXT NOT NULL,             -- nome exibido (começa com o nome do app no Dify)
+    descricao     TEXT NOT NULL DEFAULT '',
+    icone         TEXT NOT NULL DEFAULT '',  -- emoji configurado no Dify
+    cor           TEXT NOT NULL DEFAULT '',  -- fundo do emoji
+    modo          TEXT NOT NULL DEFAULT '',  -- chat, agent-chat ou advanced-chat
+    chave         TEXT NOT NULL UNIQUE,
+    sugestoes     TEXT NOT NULL DEFAULT '[]', -- JSON [{cat, txt}], usadas quando o Dify não tem perguntas sugeridas
+    ativo         INTEGER NOT NULL DEFAULT 1,
+    criado_em     TEXT NOT NULL,
+    criado_por    TEXT
+);
+-- quais agentes cada usuário pode usar
+CREATE TABLE IF NOT EXISTS usuario_agentes (
+    username   TEXT NOT NULL REFERENCES usuarios(username) ON DELETE CASCADE,
+    agente_id  INTEGER NOT NULL REFERENCES agentes(id) ON DELETE CASCADE,
+    PRIMARY KEY (username, agente_id)
+);
+CREATE TABLE IF NOT EXISTS meta (
+    chave  TEXT PRIMARY KEY,
+    valor  TEXT
+);
 """
 
 
@@ -59,6 +84,7 @@ def conn():
     with _lock:
         c = sqlite3.connect(DB_PATH, timeout=10)
         c.row_factory = sqlite3.Row
+        c.execute("PRAGMA foreign_keys = ON")
         try:
             yield c
             c.commit()
@@ -130,3 +156,127 @@ def auditar(autor: str, acao: str, alvo: str = "", detalhe: str = "") -> None:
     with conn() as c:
         c.execute("INSERT INTO auditoria (quando, autor, acao, alvo, detalhe) VALUES (?,?,?,?,?)",
                   (agora(), autor, acao, alvo, detalhe[:500]))
+
+
+# ------------------------------------------------------------------ agentes
+CAMPOS_AGENTE = ("nome", "descricao", "icone", "cor", "modo", "chave", "sugestoes", "ativo")
+
+
+def _agente(r) -> dict | None:
+    if not r:
+        return None
+    a = dict(r)
+    try:
+        a["sugestoes"] = json.loads(a.get("sugestoes") or "[]")
+    except ValueError:
+        a["sugestoes"] = []
+    return a
+
+
+def get_meta(chave: str) -> str | None:
+    with conn() as c:
+        r = c.execute("SELECT valor FROM meta WHERE chave = ?", (chave,)).fetchone()
+        return r[0] if r else None
+
+
+def set_meta(chave: str, valor: str) -> None:
+    with conn() as c:
+        c.execute("INSERT INTO meta (chave, valor) VALUES (?, ?) ON CONFLICT(chave) DO UPDATE SET valor = excluded.valor",
+                  (chave, valor))
+
+
+def get_agente(agente_id: int) -> dict | None:
+    with conn() as c:
+        return _agente(c.execute("SELECT * FROM agentes WHERE id = ?", (agente_id,)).fetchone())
+
+
+def get_agente_por_chave(chave: str) -> dict | None:
+    with conn() as c:
+        return _agente(c.execute("SELECT * FROM agentes WHERE chave = ?", (chave,)).fetchone())
+
+
+def list_agentes() -> list[dict]:
+    with conn() as c:
+        rows = c.execute(
+            """SELECT a.*, (SELECT COUNT(*) FROM usuario_agentes ua WHERE ua.agente_id = a.id) AS qtd_usuarios
+               FROM agentes a ORDER BY a.nome COLLATE NOCASE, a.id""").fetchall()
+        return [_agente(r) for r in rows]
+
+
+def criar_agente(nome: str, descricao: str, icone: str, cor: str, modo: str, chave: str, autor: str,
+                 sugestoes: list | None = None) -> int:
+    """Cadastra o agente e já libera para todos os administradores (eles podem desmarcar depois)."""
+    with conn() as c:
+        cur = c.execute(
+            """INSERT INTO agentes (nome, descricao, icone, cor, modo, chave, sugestoes, criado_em, criado_por)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (nome, descricao, icone, cor, modo, chave, json.dumps(sugestoes or [], ensure_ascii=False), agora(), autor))
+        aid = cur.lastrowid
+        c.execute("INSERT OR IGNORE INTO usuario_agentes (username, agente_id) SELECT username, ? FROM usuarios "
+                  "WHERE perfil = 'admin'", (aid,))
+        return aid
+
+
+def update_agente(agente_id: int, **campos) -> None:
+    permitidos = {k: v for k, v in campos.items() if k in CAMPOS_AGENTE}
+    if "sugestoes" in permitidos:
+        permitidos["sugestoes"] = json.dumps(permitidos["sugestoes"] or [], ensure_ascii=False)
+    if "ativo" in permitidos:
+        permitidos["ativo"] = int(bool(permitidos["ativo"]))
+    if not permitidos:
+        return
+    sets = ", ".join(f"{k} = ?" for k in permitidos)
+    with conn() as c:
+        c.execute(f"UPDATE agentes SET {sets} WHERE id = ?", (*permitidos.values(), agente_id))
+
+
+def delete_agente(agente_id: int) -> None:
+    with conn() as c:
+        c.execute("DELETE FROM agentes WHERE id = ?", (agente_id,))
+
+
+def agentes_do_usuario(username: str, so_ativos: bool = True) -> list[dict]:
+    with conn() as c:
+        rows = c.execute(
+            f"""SELECT a.* FROM agentes a JOIN usuario_agentes ua ON ua.agente_id = a.id
+                WHERE ua.username = ? {"AND a.ativo = 1" if so_ativos else ""}
+                ORDER BY a.nome COLLATE NOCASE, a.id""", (username.lower(),)).fetchall()
+        return [_agente(r) for r in rows]
+
+
+def ids_agentes_por_usuario() -> dict[str, list[int]]:
+    with conn() as c:
+        out: dict[str, list[int]] = {}
+        for r in c.execute("SELECT username, agente_id FROM usuario_agentes ORDER BY agente_id"):
+            out.setdefault(r[0], []).append(r[1])
+        return out
+
+
+def tem_acesso(username: str, agente_id: int) -> bool:
+    with conn() as c:
+        return c.execute("SELECT 1 FROM usuario_agentes WHERE username = ? AND agente_id = ?",
+                         (username.lower(), agente_id)).fetchone() is not None
+
+
+def definir_agentes_usuario(username: str, agente_ids: list[int]) -> list[int]:
+    """Troca a lista de agentes do usuário; ids que não existem são ignorados. Devolve a lista gravada."""
+    with conn() as c:
+        validos = {r[0] for r in c.execute("SELECT id FROM agentes")}
+        ids = sorted({int(i) for i in agente_ids} & validos)
+        c.execute("DELETE FROM usuario_agentes WHERE username = ?", (username.lower(),))
+        c.executemany("INSERT INTO usuario_agentes (username, agente_id) VALUES (?, ?)",
+                      [(username.lower(), i) for i in ids])
+        return ids
+
+
+def liberar_todos_agentes(username: str) -> None:
+    with conn() as c:
+        c.execute("INSERT OR IGNORE INTO usuario_agentes (username, agente_id) SELECT ?, id FROM agentes",
+                  (username.lower(),))
+
+
+def liberar_agente_para_todos(agente_id: int) -> int:
+    with conn() as c:
+        cur = c.execute("INSERT OR IGNORE INTO usuario_agentes (username, agente_id) SELECT username, ? FROM usuarios",
+                        (agente_id,))
+        return cur.rowcount

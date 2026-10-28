@@ -1,4 +1,4 @@
-"""Agente Técnico PU - frontend do Grupo Flexível (API + arquivos do PWA)."""
+"""Agentes do Grupo Flexível - frontend dos agentes do Dify (API + arquivos do PWA)."""
 import json
 import logging
 import os
@@ -6,6 +6,7 @@ import re
 import time
 from contextlib import asynccontextmanager
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -22,11 +23,47 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 FRONT = os.getenv("FRONTEND_DIR", os.path.join(os.path.dirname(__file__), "..", "..", "frontend"))
 FRONT = os.path.abspath(FRONT)
 
+# Perguntas de exemplo do Agente Técnico PU, gravadas no agente que vem da versão de agente único
+SUGESTOES_PU = [
+    {"cat": "Produto", "txt": "Tudo sobre o FLEXX AG 2032"},
+    {"cat": "Qualidade", "txt": "Analise a última reclamação de cliente e as inspeções do lote envolvido"},
+    {"cat": "Engenharia e custo", "txt": "Formulação e custo do FLEXX TH T190AH1"},
+    {"cat": "Compras", "txt": "De quem compramos o TDI 8020 nos últimos 12 meses e a que preço?"},
+    {"cat": "Desenvolvimento", "txt": "Já fizemos desenvolvimento com poliol vegetal?"},
+]
+
+RX_CHAVE = re.compile(r"app-[A-Za-z0-9]{16,64}")
+RX_ID = re.compile(r"[A-Za-z0-9-]{8,64}")       # ids de conversa, mensagem e tarefa do Dify (UUID)
+RX_COR = re.compile(r"#[0-9A-Fa-f]{3,8}")
+
+
+async def _migrar_agente_unico():
+    """Até a versão de agente único, o app usava só a DIFY_API_KEY do .env. Na primeira subida desta versão
+    essa chave vira o primeiro agente cadastrado e todos os usuários que já existiam continuam com acesso."""
+    if db.get_meta("migracao_agentes"):
+        return
+    chave = settings.DIFY_API_KEY.strip()
+    if chave and not db.get_agente_por_chave(chave):
+        try:
+            dados = await _ler_app_dify(chave)
+        except HTTPException as e:
+            # Dify fora do ar na subida: cadastra assim mesmo, o admin ajusta o nome depois
+            log.warning("migração: não consegui ler o agente no Dify (%s); usando o nome padrão.", e.detail)
+            dados = {"nome": settings.APP_NAME, "descricao": "", "modo": "", "icone": "", "cor": ""}
+        aid = db.criar_agente(dados["nome"], dados["descricao"], dados["icone"], dados["cor"], dados["modo"], chave,
+                              "sistema", SUGESTOES_PU)
+        n = db.liberar_agente_para_todos(aid)
+        db.auditar("sistema", "migrar_agente", str(aid), f"{dados['nome']} liberado para {n} usuário(s)")
+        log.info("migração: agente '%s' cadastrado e liberado para %d usuário(s).", dados["nome"], n)
+    db.set_meta("migracao_agentes", db.agora())
+
+
 @asynccontextmanager
 async def _ciclo(_app):
     db.init_db()
-    if not settings.DIFY_API_KEY:
-        log.warning("DIFY_API_KEY não configurada: o chat não vai funcionar.")
+    await _migrar_agente_unico()
+    if not db.list_agentes():
+        log.warning("Nenhum agente cadastrado: cadastre em Administração > Agentes.")
     if not os.getenv("SECRET_KEY"):
         log.warning("SECRET_KEY não definida: as sessões caem a cada reinício do container.")
     log.info("Pronto. Admins iniciais: %s", ", ".join(settings.INITIAL_ADMINS) or "(nenhum)")
@@ -62,6 +99,44 @@ def _erro_dify(e: dify.DifyErro):
     log.warning("Dify %s: %s", e.status, e.mensagem)
     status = 502 if e.status >= 500 or e.status == 401 else e.status
     return HTTPException(status, f"O agente não respondeu como esperado ({e.mensagem}).")
+
+
+def _id(valor: str | None, obrigatorio: bool = True) -> str | None:
+    """Os ids vão na URL do Dify: só aceita o formato dele (evita montar caminhos inesperados)."""
+    if valor is None and not obrigatorio:
+        return None
+    if not valor or not RX_ID.fullmatch(valor):
+        raise HTTPException(400, "Identificador inválido.")
+    return valor
+
+
+async def _ler_app_dify(chave: str) -> dict:
+    """Confere a chave no Dify e devolve nome, descrição, tipo e ícone do app."""
+    try:
+        inf = await dify.info(chave)
+    except dify.DifyErro as e:
+        if e.status in (401, 403, 404):
+            raise HTTPException(400, "O Dify recusou essa chave. Confira se copiou a chave inteira (app-...) "
+                                     "e se ela não foi apagada no Dify.")
+        raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
+    except (httpx.HTTPError, ValueError) as e:
+        log.warning("Dify inacessível: %s", e)
+        raise HTTPException(502, "Não foi possível falar com o Dify. Tente de novo em instantes.")
+    modo = str(inf.get("mode") or "")
+    if modo and modo not in dify.MODOS_CHAT:
+        raise HTTPException(400, f"Esse app do Dify é do tipo \"{modo}\". Só apps de conversa "
+                                 "(Chatbot, Agente ou Chatflow) podem ser usados aqui.")
+    icone, cor = "", ""
+    try:
+        st = await dify.site(chave)
+        if (st.get("icon_type") or "emoji") == "emoji":
+            icone = str(st.get("icon") or "")[:16]
+            cor = str(st.get("icon_background") or "")
+    except (dify.DifyErro, httpx.HTTPError, ValueError):
+        pass  # sem WebApp publicado: fica sem ícone
+    return {"nome": str(inf.get("name") or "Agente").strip()[:120] or "Agente",
+            "descricao": str(inf.get("description") or "").strip()[:1000],
+            "modo": modo, "icone": icone, "cor": cor if RX_COR.fullmatch(cor) else ""}
 
 
 # ------------------------------------------------------------------ público
@@ -108,11 +183,12 @@ def login(dados: LoginIn, request: Request):
     user = db.get_user(username)
     if not user and username in settings.INITIAL_ADMINS:
         db.upsert_user(username, ad["nome"], ad["email"], ad["departamento"], ad["cargo"], "admin", True, "sistema")
+        db.liberar_todos_agentes(username)
         db.auditar("sistema", "admin_inicial", username)
         user = db.get_user(username)
     if not user:
         db.registrar_acesso(username, ip, "nao_cadastrado")
-        raise HTTPException(403, "Você ainda não tem acesso ao Agente Técnico PU. Peça a liberação ao administrador.")
+        raise HTTPException(403, f"Você ainda não tem acesso ao {settings.APP_NAME}. Peça a liberação ao administrador.")
     if not user["ativo"]:
         db.registrar_acesso(username, ip, "inativo")
         raise HTTPException(403, "Seu acesso está desativado. Fale com o administrador.")
@@ -143,30 +219,54 @@ def me(user: dict = Depends(usuario_atual)):
     return _publico(user)
 
 
-# ------------------------------------------------------------------ agente
-_cache_params = {"t": 0, "v": None}
+# ------------------------------------------------------------------ agentes
+def agente_permitido(aid: int, user: dict = Depends(usuario_atual)) -> dict:
+    """Confere a cada requisição se o agente está ativo e liberado para a pessoa (tirar o acesso corta na hora)."""
+    a = db.get_agente(aid)
+    if not a or not a["ativo"] or not db.tem_acesso(user["username"], aid):
+        raise HTTPException(403, "Você não tem acesso a este agente.")
+    return a
 
 
-@app.get("/api/agente/info")
-async def agente_info(user: dict = Depends(usuario_atual)):
-    if time.time() - _cache_params["t"] > 300 or _cache_params["v"] is None:
+def _agente_publico(a: dict) -> dict:
+    return {k: a[k] for k in ("id", "nome", "descricao", "icone", "cor")}
+
+
+@app.get("/api/agentes")
+def meus_agentes(user: dict = Depends(usuario_atual)):
+    return {"itens": [_agente_publico(a) for a in db.agentes_do_usuario(user["username"])]}
+
+
+_cache_params: dict[int, dict] = {}
+
+
+@app.get("/api/agentes/{aid}/info")
+async def agente_info(ag: dict = Depends(agente_permitido)):
+    cache = _cache_params.get(ag["id"])
+    if not cache or cache["chave"] != ag["chave"] or time.time() - cache["t"] > 300:
         try:
-            p = await dify.parametros()
-            _cache_params.update(t=time.time(), v={
+            p = await dify.parametros(ag["chave"])
+            cache = {"t": time.time(), "chave": ag["chave"], "v": {
                 "abertura": p.get("opening_statement") or "",
-                "sugestoes": p.get("suggested_questions") or [],
+                "sugestoes": [{"cat": "", "txt": str(t)} for t in (p.get("suggested_questions") or []) if t],
                 "sugestoes_apos_resposta": bool((p.get("suggested_questions_after_answer") or {}).get("enabled")),
-            })
+            }}
+            _cache_params[ag["id"]] = cache
         except Exception as e:  # noqa: BLE001
-            log.warning("parâmetros do Dify indisponíveis: %s", e)
-            return {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False}
-    return _cache_params["v"]
+            log.warning("parâmetros do Dify indisponíveis (agente %s): %s", ag["id"], e)
+            cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False}}
+    v = dict(cache["v"])
+    # perguntas sugeridas do Dify têm prioridade; sem elas, usa as cadastradas no agente
+    if not v["sugestoes"]:
+        v["sugestoes"] = ag["sugestoes"]
+    return v
 
 
-@app.get("/api/conversas")
-async def listar_conversas(last_id: str | None = None, user: dict = Depends(usuario_atual)):
+@app.get("/api/agentes/{aid}/conversas")
+async def listar_conversas(last_id: str | None = None, ag: dict = Depends(agente_permitido),
+                           user: dict = Depends(usuario_atual)):
     try:
-        r = await dify.conversas(user["username"], last_id)
+        r = await dify.conversas(ag["chave"], user["username"], _id(last_id, False))
     except dify.DifyErro as e:
         raise _erro_dify(e)
     return {"itens": [{"id": c["id"], "nome": c.get("name") or "Nova conversa",
@@ -184,10 +284,11 @@ def _fontes(meta: dict | None) -> list[dict]:
     return out
 
 
-@app.get("/api/conversas/{cid}/mensagens")
-async def listar_mensagens(cid: str, first_id: str | None = None, user: dict = Depends(usuario_atual)):
+@app.get("/api/agentes/{aid}/conversas/{cid}/mensagens")
+async def listar_mensagens(cid: str, first_id: str | None = None, ag: dict = Depends(agente_permitido),
+                           user: dict = Depends(usuario_atual)):
     try:
-        r = await dify.mensagens(user["username"], cid, first_id)
+        r = await dify.mensagens(ag["chave"], user["username"], _id(cid), _id(first_id, False))
     except dify.DifyErro as e:
         raise _erro_dify(e)
     itens = []
@@ -205,19 +306,20 @@ class RenomearIn(BaseModel):
     nome: str = Field(default="", max_length=120)
 
 
-@app.patch("/api/conversas/{cid}")
-async def renomear_conversa(cid: str, dados: RenomearIn, user: dict = Depends(usuario_atual)):
+@app.patch("/api/agentes/{aid}/conversas/{cid}")
+async def renomear_conversa(cid: str, dados: RenomearIn, ag: dict = Depends(agente_permitido),
+                            user: dict = Depends(usuario_atual)):
     try:
-        r = await dify.renomear(user["username"], cid, dados.nome.strip() or None)
+        r = await dify.renomear(ag["chave"], user["username"], _id(cid), dados.nome.strip() or None)
     except dify.DifyErro as e:
         raise _erro_dify(e)
     return {"id": cid, "nome": r.get("name") or dados.nome}
 
 
-@app.delete("/api/conversas/{cid}")
-async def apagar_conversa(cid: str, user: dict = Depends(usuario_atual)):
+@app.delete("/api/agentes/{aid}/conversas/{cid}")
+async def apagar_conversa(cid: str, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
     try:
-        await dify.apagar(user["username"], cid)
+        await dify.apagar(ag["chave"], user["username"], _id(cid))
     except dify.DifyErro as e:
         raise _erro_dify(e)
     return {"ok": True}
@@ -228,19 +330,20 @@ class FeedbackIn(BaseModel):
     comentario: str = Field(default="", max_length=1000)
 
 
-@app.post("/api/mensagens/{mid}/feedback")
-async def avaliar(mid: str, dados: FeedbackIn, user: dict = Depends(usuario_atual)):
+@app.post("/api/agentes/{aid}/mensagens/{mid}/feedback")
+async def avaliar(mid: str, dados: FeedbackIn, ag: dict = Depends(agente_permitido),
+                  user: dict = Depends(usuario_atual)):
     try:
-        await dify.feedback(user["username"], mid, dados.avaliacao, dados.comentario)
+        await dify.feedback(ag["chave"], user["username"], _id(mid), dados.avaliacao, dados.comentario)
     except dify.DifyErro as e:
         raise _erro_dify(e)
     return {"ok": True}
 
 
-@app.post("/api/chat/{task_id}/parar")
-async def parar(task_id: str, user: dict = Depends(usuario_atual)):
+@app.post("/api/agentes/{aid}/chat/{task_id}/parar")
+async def parar(task_id: str, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
     try:
-        await dify.parar(user["username"], task_id)
+        await dify.parar(ag["chave"], user["username"], _id(task_id))
     except dify.DifyErro as e:
         raise _erro_dify(e)
     return {"ok": True}
@@ -251,7 +354,7 @@ class ChatIn(BaseModel):
     conversation_id: str | None = None
 
 
-# Nomes amigáveis do que o agente está fazendo (ferramentas do Agente Técnico PU)
+# Nomes amigáveis do que o agente está fazendo (ferramentas dos agentes do Dify)
 _STATUS = [
     (re.compile(r"qlik_", re.I), "Consultando o ERP no Qlik"),
     (re.compile(r"buscar_documentos", re.I), "Buscando certificados, especificações e normas"),
@@ -278,15 +381,17 @@ def _sse(obj: dict) -> str:
     return f"data: {json.dumps(obj, ensure_ascii=False)}\n\n"
 
 
-@app.post("/api/chat")
-async def chat(dados: ChatIn, user: dict = Depends(usuario_atual)):
+@app.post("/api/agentes/{aid}/chat")
+async def chat(dados: ChatIn, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
     username = user["username"]
+    chave = ag["chave"]
+    conversa = _id(dados.conversation_id, False)
 
     async def gerar():
         enviado_inicio = False
         ultimo_status = None
         try:
-            async for ev in dify.stream_chat(username, dados.pergunta.strip(), dados.conversation_id):
+            async for ev in dify.stream_chat(chave, username, dados.pergunta.strip(), conversa):
                 tipo = ev.get("event")
                 if not enviado_inicio and ev.get("conversation_id"):
                     enviado_inicio = True
@@ -321,10 +426,12 @@ async def chat(dados: ChatIn, user: dict = Depends(usuario_atual)):
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-# ------------------------------------------------------------------ administração
+# ------------------------------------------------------------------ administração: usuários
 class NovoUsuarioIn(BaseModel):
     usuario: str = Field(min_length=1, max_length=120)
     perfil: str = Field(default="usuario", pattern="^(usuario|admin)$")
+    # agentes liberados; administradores recebem todos (e podem desmarcar depois)
+    agentes: list[int] | None = Field(default=None, max_length=500)
 
 
 class AlterarUsuarioIn(BaseModel):
@@ -332,9 +439,20 @@ class AlterarUsuarioIn(BaseModel):
     ativo: bool | None = None
 
 
+class AgentesUsuarioIn(BaseModel):
+    agentes: list[int] = Field(max_length=500)
+
+
+def _usuario_admin(u: dict, mapa: dict[str, list[int]] | None = None) -> dict:
+    if mapa is None:
+        mapa = db.ids_agentes_por_usuario()
+    return {**u, "agentes": mapa.get(u["username"], [])}
+
+
 @app.get("/api/admin/usuarios")
 def admin_listar(admin: dict = Depends(exigir_admin)):
-    return {"itens": db.list_users()}
+    mapa = db.ids_agentes_por_usuario()
+    return {"itens": [_usuario_admin(u, mapa) for u in db.list_users()]}
 
 
 @app.get("/api/admin/ad")
@@ -361,8 +479,13 @@ def admin_incluir(dados: NovoUsuarioIn, admin: dict = Depends(exigir_admin)):
     existente = db.get_user(ad["username"])
     db.upsert_user(ad["username"], ad["nome"], ad["email"], ad["departamento"], ad["cargo"],
                    dados.perfil, True, admin["username"])
-    db.auditar(admin["username"], "reativar" if existente else "incluir", ad["username"], dados.perfil)
-    return db.get_user(ad["username"])
+    if dados.perfil == "admin":
+        db.liberar_todos_agentes(ad["username"])
+    elif dados.agentes is not None or not existente:
+        db.definir_agentes_usuario(ad["username"], dados.agentes or [])
+    db.auditar(admin["username"], "reativar" if existente else "incluir", ad["username"],
+               json.dumps({"perfil": dados.perfil, "agentes": dados.agentes}))
+    return _usuario_admin(db.get_user(ad["username"]))
 
 
 @app.patch("/api/admin/usuarios/{username}")
@@ -380,8 +503,19 @@ def admin_alterar(username: str, dados: AlterarUsuarioIn, admin: dict = Depends(
     if dados.ativo is not None:
         campos["ativo"] = int(dados.ativo)
     db.update_user(username, **campos)
+    if dados.perfil == "admin" and alvo["perfil"] != "admin":
+        db.liberar_todos_agentes(username)  # quem vira admin enxerga todos os agentes
     db.auditar(admin["username"], "alterar", username.lower(), json.dumps(campos))
-    return db.get_user(username)
+    return _usuario_admin(db.get_user(username))
+
+
+@app.put("/api/admin/usuarios/{username}/agentes")
+def admin_agentes_usuario(username: str, dados: AgentesUsuarioIn, admin: dict = Depends(exigir_admin)):
+    if not db.get_user(username):
+        raise HTTPException(404, "Usuário não cadastrado.")
+    ids = db.definir_agentes_usuario(username, dados.agentes)
+    db.auditar(admin["username"], "agentes_usuario", username.lower(), json.dumps(ids))
+    return _usuario_admin(db.get_user(username))
 
 
 @app.delete("/api/admin/usuarios/{username}")
@@ -401,13 +535,114 @@ def admin_acessos(admin: dict = Depends(exigir_admin)):
     return {"itens": db.listar_acessos(300)}
 
 
+# ------------------------------------------------------------------ administração: agentes
+class SugestaoIn(BaseModel):
+    cat: str = Field(default="", max_length=40)
+    txt: str = Field(min_length=1, max_length=300)
+
+
+class NovoAgenteIn(BaseModel):
+    chave: str = Field(min_length=1, max_length=200)
+    nome: str = Field(default="", max_length=120)
+
+
+class AlterarAgenteIn(BaseModel):
+    nome: str | None = Field(default=None, max_length=120)
+    descricao: str | None = Field(default=None, max_length=1000)
+    sugestoes: list[SugestaoIn] | None = Field(default=None, max_length=12)
+    ativo: bool | None = None
+    chave: str | None = Field(default=None, max_length=200)
+
+
+def _mascarar(chave: str) -> str:
+    return f"{chave[:7]}…{chave[-4:]}" if len(chave) > 12 else "app-…"
+
+
+def _agente_admin(a: dict) -> dict:
+    out = {k: v for k, v in a.items() if k != "chave"}
+    out["chave_mascarada"] = _mascarar(a["chave"])
+    return out
+
+
+def _validar_chave(chave: str, agente_id: int | None = None) -> str:
+    chave = chave.strip()
+    if not RX_CHAVE.fullmatch(chave):
+        raise HTTPException(400, "Chave inválida. No Dify, abra o agente > Acesso à API > Chave da API e copie a "
+                                 "chave inteira (começa com app-).")
+    dono = db.get_agente_por_chave(chave)
+    if dono and dono["id"] != agente_id:
+        raise HTTPException(409, f"Essa chave já está cadastrada no agente \"{dono['nome']}\".")
+    return chave
+
+
+def _agente_ou_404(agente_id: int) -> dict:
+    a = db.get_agente(agente_id)
+    if not a:
+        raise HTTPException(404, "Agente não encontrado.")
+    return a
+
+
+def _agente_com_qtd(agente_id: int) -> dict:
+    return _agente_admin(next(a for a in db.list_agentes() if a["id"] == agente_id))
+
+
+@app.get("/api/admin/agentes")
+def admin_listar_agentes(admin: dict = Depends(exigir_admin)):
+    return {"itens": [_agente_admin(a) for a in db.list_agentes()]}
+
+
+@app.post("/api/admin/agentes")
+async def admin_incluir_agente(dados: NovoAgenteIn, admin: dict = Depends(exigir_admin)):
+    chave = _validar_chave(dados.chave)
+    app_dify = await _ler_app_dify(chave)
+    nome = dados.nome.strip() or app_dify["nome"]
+    aid = db.criar_agente(nome, app_dify["descricao"], app_dify["icone"], app_dify["cor"], app_dify["modo"], chave,
+                          admin["username"])
+    db.auditar(admin["username"], "incluir_agente", str(aid), nome)
+    return _agente_com_qtd(aid)
+
+
+@app.patch("/api/admin/agentes/{agente_id}")
+async def admin_alterar_agente(agente_id: int, dados: AlterarAgenteIn, admin: dict = Depends(exigir_admin)):
+    atual = _agente_ou_404(agente_id)
+    campos: dict = {}
+    if dados.chave is not None and dados.chave.strip() and dados.chave.strip() != atual["chave"]:
+        chave = _validar_chave(dados.chave, agente_id)
+        app_dify = await _ler_app_dify(chave)
+        campos.update(chave=chave, modo=app_dify["modo"], icone=app_dify["icone"], cor=app_dify["cor"])
+    if dados.nome is not None:
+        if not dados.nome.strip():
+            raise HTTPException(400, "Informe o nome do agente.")
+        campos["nome"] = dados.nome.strip()
+    if dados.descricao is not None:
+        campos["descricao"] = dados.descricao.strip()
+    if dados.sugestoes is not None:
+        campos["sugestoes"] = [{"cat": s.cat.strip(), "txt": s.txt.strip()} for s in dados.sugestoes if s.txt.strip()]
+    if dados.ativo is not None:
+        campos["ativo"] = dados.ativo
+    db.update_agente(agente_id, **campos)
+    _cache_params.pop(agente_id, None)
+    resumo = {k: ("(nova chave)" if k == "chave" else v) for k, v in campos.items() if k not in ("icone", "cor", "modo")}
+    db.auditar(admin["username"], "alterar_agente", str(agente_id), json.dumps(resumo, ensure_ascii=False))
+    return _agente_com_qtd(agente_id)
+
+
+@app.delete("/api/admin/agentes/{agente_id}")
+def admin_remover_agente(agente_id: int, admin: dict = Depends(exigir_admin)):
+    a = _agente_ou_404(agente_id)
+    db.delete_agente(agente_id)
+    _cache_params.pop(agente_id, None)
+    db.auditar(admin["username"], "remover_agente", str(agente_id), a["nome"])
+    return {"ok": True}
+
+
 # ------------------------------------------------------------------ PWA / arquivos estáticos
 @app.get("/manifest.webmanifest")
 def manifest():
     return JSONResponse({
         "name": f"{settings.APP_NAME} · Grupo Flexível",
         "short_name": settings.APP_SHORT_NAME,
-        "description": "Especialista em poliuretano do Grupo Flexível: produtos, engenharias, qualidade, custos e normas.",
+        "description": "Agentes de IA do Grupo Flexível: produtos, engenharias, qualidade, custos e normas.",
         "lang": "pt-BR",
         "start_url": "/",
         "scope": "/",

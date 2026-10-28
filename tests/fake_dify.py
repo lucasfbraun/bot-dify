@@ -1,4 +1,7 @@
-"""Dify falso (só para testes locais): imita a API de chat com streaming de um app Agente."""
+"""Dify falso (só para testes locais): imita a API de vários apps de chat, cada um com a sua chave.
+
+Como no Dify de verdade, as conversas pertencem ao app: a chave de um app não enxerga as conversas de outro.
+"""
 import asyncio
 import json
 import time
@@ -8,10 +11,24 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 app = FastAPI()
+
+CHAVE_PU = "app-PUqlik0000000000000000"
+CHAVE_COMERCIAL = "app-Comercial0000000000000"
+CHAVE_WORKFLOW = "app-Fluxo00000000000000000"
+
+APPS = {
+    CHAVE_PU: {"name": "Agente Técnico PU(qlik)", "description": "Especialista em poliuretano com acesso ao Qlik.",
+               "mode": "agent-chat", "icon": "🧪", "icon_background": "#E4FBCC", "ferramentas": True},
+    CHAVE_COMERCIAL: {"name": "Agente Comercial", "description": "Tira dúvidas de catálogo, sem acesso ao ERP.",
+                      "mode": "advanced-chat", "icon": "💼", "icon_background": "#D1E9FF", "ferramentas": False,
+                      "sugestoes": ["Quais espumas temos para colchões?"]},
+    CHAVE_WORKFLOW: {"name": "Fluxo de relatórios", "description": "", "mode": "workflow", "icon": "⚙️",
+                     "icon_background": "#FFEAD5", "ferramentas": False},
+}
 CONVERSAS: dict[str, dict] = {}
 MENSAGENS: dict[str, list] = {}
 
-RESPOSTA = """## FLEXX AG 2032 — visão geral
+RESPOSTA_PU = """## FLEXX AG 2032 — visão geral
 
 O **FLEXX AG 2032** é um sistema de espuma flexível convencional. Abaixo, o resumo das últimas inspeções:
 
@@ -28,89 +45,164 @@ O **FLEXX AG 2032** é um sistema de espuma flexível convencional. Abaixo, o re
 > Recomendo acompanhar os próximos 3 lotes antes de alterar a formulação.
 """
 
+RESPOSTA_COMERCIAL = """Sou o **Agente Comercial**. Para colchões, o catálogo tem as linhas *FLEXX Conforto* e *FLEXX HR*.
 
-def _auth(req: Request):
-    return req.headers.get("authorization") == "Bearer app-teste"
+Não tenho acesso ao ERP, então não consigo informar estoque ou custo."""
+
+
+def _app(req: Request):
+    """Devolve (chave, app) pelo cabeçalho Authorization, ou (None, None) se a chave não existe."""
+    auth = req.headers.get("authorization", "")
+    chave = auth[7:] if auth.startswith("Bearer ") else ""
+    return (chave, APPS[chave]) if chave in APPS else (None, None)
+
+
+def _negado():
+    return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+
+
+def _conversa_do(chave: str, user: str, cid: str):
+    c = CONVERSAS.get(cid)
+    return c if c and c["app"] == chave and c["user"] == user else None
+
+
+@app.get("/v1/info")
+async def info(req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    return {"name": a["name"], "description": a["description"], "tags": [], "mode": a["mode"], "author_name": "TI"}
+
+
+@app.get("/v1/site")
+async def site(req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    return {"title": a["name"], "icon_type": "emoji", "icon": a["icon"], "icon_background": a["icon_background"],
+            "description": a["description"], "chat_color_theme_inverted": False, "default_language": "pt-BR",
+            "show_workflow_steps": False, "use_icon_as_answer_icon": False}
 
 
 @app.get("/v1/parameters")
 async def parametros(req: Request):
-    return {"opening_statement": "", "suggested_questions": [], "suggested_questions_after_answer": {"enabled": False}}
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    return {"opening_statement": "", "suggested_questions": a.get("sugestoes", []),
+            "suggested_questions_after_answer": {"enabled": False}}
 
 
 @app.get("/v1/conversations")
-async def conversas(user: str, limit: int = 20, last_id: str | None = None):
-    itens = sorted([c for c in CONVERSAS.values() if c["user"] == user], key=lambda c: -c["updated_at"])
+async def conversas(req: Request, user: str, limit: int = 20, last_id: str | None = None):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    itens = sorted([c for c in CONVERSAS.values() if c["user"] == user and c["app"] == chave],
+                   key=lambda c: -c["updated_at"])
     return {"data": [{k: c[k] for k in ("id", "name", "created_at", "updated_at")} for c in itens], "has_more": False}
 
 
 @app.get("/v1/messages")
-async def mensagens(user: str, conversation_id: str, limit: int = 20, first_id: str | None = None):
-    if conversation_id not in CONVERSAS or CONVERSAS[conversation_id]["user"] != user:
+async def mensagens(req: Request, user: str, conversation_id: str, limit: int = 20, first_id: str | None = None):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    if not _conversa_do(chave, user, conversation_id):
         return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
     return {"data": MENSAGENS.get(conversation_id, []), "has_more": False}
 
 
 @app.post("/v1/conversations/{cid}/name")
 async def nome(cid: str, req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
     b = await req.json()
-    CONVERSAS[cid]["name"] = b.get("name") or "Conversa"
-    return {"id": cid, "name": CONVERSAS[cid]["name"]}
+    c = _conversa_do(chave, b.get("user"), cid)
+    if not c:
+        return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
+    c["name"] = b.get("name") or "Conversa"
+    return {"id": cid, "name": c["name"]}
 
 
 @app.delete("/v1/conversations/{cid}")
-async def apagar(cid: str):
+async def apagar(cid: str, req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    b = await req.json()
+    if not _conversa_do(chave, b.get("user"), cid):
+        return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
     CONVERSAS.pop(cid, None)
     return {"result": "success"}
 
 
 @app.post("/v1/messages/{mid}/feedbacks")
 async def feedback(mid: str, req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
     b = await req.json()
-    for lst in MENSAGENS.values():
+    for cid, lst in MENSAGENS.items():
+        if CONVERSAS.get(cid, {}).get("app") != chave:
+            continue
         for m in lst:
             if m["id"] == mid:
                 m["feedback"] = {"rating": b.get("rating")} if b.get("rating") else None
-    return {"result": "success"}
+                return {"result": "success"}
+    return JSONResponse({"code": "not_found", "message": "Message Not Exists."}, 404)
 
 
 @app.post("/v1/chat-messages/{task}/stop")
-async def parar(task: str):
+async def parar(task: str, req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
     return {"result": "success"}
 
 
 @app.post("/v1/chat-messages")
 async def chat(req: Request):
-    if not _auth(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    if a["mode"] not in ("chat", "agent-chat", "advanced-chat"):
+        return JSONResponse({"code": "not_chat_app", "message": "App unavailable"}, 400)
     b = await req.json()
     cid = b.get("conversation_id") or str(uuid.uuid4())
+    if b.get("conversation_id") and not _conversa_do(chave, b["user"], cid):
+        return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
     novo = cid not in CONVERSAS
     if novo:
-        CONVERSAS[cid] = {"id": cid, "name": "New conversation", "user": b["user"], "created_at": int(time.time()),
-                          "updated_at": int(time.time())}
+        CONVERSAS[cid] = {"id": cid, "name": "New conversation", "user": b["user"], "app": chave,
+                          "created_at": int(time.time()), "updated_at": int(time.time())}
     mid, task = str(uuid.uuid4()), str(uuid.uuid4())
     pergunta = b["query"]
+    resposta = RESPOSTA_PU if a["ferramentas"] else RESPOSTA_COMERCIAL
+    fontes = ([{"document_name": "BT_FLEXX_AG_2032.pdf", "dataset_name": "Boletins técnicos"},
+               {"document_name": "NBR 9178 - Espumas flexíveis.pdf", "dataset_name": "Normas"}]
+              if a["ferramentas"] else [])
 
     async def gerar():
         base = {"conversation_id": cid, "message_id": mid, "task_id": task}
+
         def ev(d):
             return f"data: {json.dumps({**base, **d}, ensure_ascii=False)}\n\n"
-        yield ev({"event": "agent_thought", "thought": "", "tool": "qlik_get_chart_data", "position": 1})
-        await asyncio.sleep(0.6)
-        yield "event: ping\n\n"
-        yield ev({"event": "agent_thought", "thought": "", "tool": "buscar_documentos", "position": 2})
-        await asyncio.sleep(0.6)
-        for i in range(0, len(RESPOSTA), 12):
-            yield ev({"event": "agent_message", "answer": RESPOSTA[i:i + 12]})
+        if a["ferramentas"]:
+            yield ev({"event": "agent_thought", "thought": "", "tool": "qlik_get_chart_data", "position": 1})
+            await asyncio.sleep(0.6)
+            yield "event: ping\n\n"
+            yield ev({"event": "agent_thought", "thought": "", "tool": "buscar_documentos", "position": 2})
+            await asyncio.sleep(0.6)
+        for i in range(0, len(resposta), 12):
+            yield ev({"event": "agent_message" if a["mode"] == "agent-chat" else "message",
+                      "answer": resposta[i:i + 12]})
             await asyncio.sleep(0.015)
-        yield ev({"event": "message_end", "id": mid, "metadata": {"retriever_resources": [
-            {"document_name": "BT_FLEXX_AG_2032.pdf", "dataset_name": "Boletins técnicos"},
-            {"document_name": "NBR 9178 - Espumas flexíveis.pdf", "dataset_name": "Normas"}]}})
-        MENSAGENS.setdefault(cid, []).append({"id": mid, "conversation_id": cid, "query": pergunta, "answer": RESPOSTA,
+        yield ev({"event": "message_end", "id": mid, "metadata": {"retriever_resources": fontes}})
+        MENSAGENS.setdefault(cid, []).append({"id": mid, "conversation_id": cid, "query": pergunta, "answer": resposta,
                                               "created_at": int(time.time()), "feedback": None,
-                                              "retriever_resources": [{"document_name": "BT_FLEXX_AG_2032.pdf",
-                                                                       "dataset_name": "Boletins técnicos"}]})
+                                              "retriever_resources": fontes[:1]})
         CONVERSAS[cid]["updated_at"] = int(time.time())
         if novo:
             CONVERSAS[cid]["name"] = pergunta[:40]

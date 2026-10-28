@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=1">
+  <link rel="stylesheet" href="/assets/app.css?v=2">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -65,7 +65,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
       </button>
       <img class="topo-logo" src="/icons/logo-flexivel.svg" alt="Grupo Flexível" width="110" height="34">
-      <span class="topo-titulo">Agente Técnico PU</span>
+      <span class="topo-titulo" id="topo-titulo">Agente Técnico PU</span>
       <div class="topo-direita">
         <button class="btn-icone topo-nova" id="btn-nova-topo" aria-label="Nova conversa" title="Nova conversa">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
@@ -74,7 +74,7 @@
         <div class="menu" id="menu-usuario" role="menu" hidden>
           <div class="menu-cab"><strong id="menu-nome"></strong><span id="menu-email"></span></div>
           <button role="menuitem" id="menu-chat">Conversas</button>
-          <button role="menuitem" id="menu-admin" hidden>Usuários e acessos</button>
+          <button role="menuitem" id="menu-admin" hidden>Administração</button>
           <button role="menuitem" id="menu-tema">Tema: automático</button>
           <button role="menuitem" id="menu-sair">Sair</button>
         </div>
@@ -84,6 +84,13 @@
     <div class="corpo">
       <!-- barra lateral -->
       <aside class="lateral" id="lateral" aria-label="Conversas">
+        <div class="seletor-agente" id="seletor-agente" hidden>
+          <label for="sel-agente">Agente</label>
+          <div class="sel-agente-caixa">
+            <span class="agente-icone" id="sel-agente-icone" aria-hidden="true"></span>
+            <select id="sel-agente"></select>
+          </div>
+        </div>
         <button class="btn btn-primario btn-largo" id="btn-nova">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
           Nova conversa
@@ -100,6 +107,7 @@
           <div class="boas-vindas" id="boas-vindas">
             <img src="/icons/icon-192.png" alt="" width="64" height="64">
             <h2 id="saudacao">Olá!</h2>
+            <div class="agentes-rapidos" id="agentes-rapidos" hidden></div>
             <p id="abertura">Sou o especialista em poliuretano do Grupo Flexível. Pergunte sobre produtos, formulações, inspeções, reclamações, custos, compras, desenvolvimento e normas.</p>
             <div class="sugestoes" id="sugestoes"></div>
           </div>
@@ -122,21 +130,34 @@
       <main class="principal admin" id="view-admin" hidden>
         <div class="admin-cab">
           <div>
-            <h2>Usuários com acesso</h2>
-            <p class="muted">Só entra quem está nesta lista. O login e a senha são os da rede (AD).</p>
+            <h2>Administração</h2>
+            <p class="muted">Quem pode entrar e quais agentes do Dify cada pessoa usa. O login e a senha são os da rede (AD).</p>
           </div>
-          <button class="btn btn-primario" id="btn-add-usuario">
-            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
-            Adicionar usuário
-          </button>
         </div>
         <div class="abas" role="tablist">
           <button role="tab" class="aba ativa" data-aba="usuarios" aria-selected="true">Usuários</button>
+          <button role="tab" class="aba" data-aba="agentes" aria-selected="false">Agentes</button>
           <button role="tab" class="aba" data-aba="acessos" aria-selected="false">Registro de acessos</button>
         </div>
         <div id="aba-usuarios">
-          <input class="filtro" id="filtro-usuarios" type="search" placeholder="Filtrar por nome, login ou setor">
+          <div class="barra-aba">
+            <input class="filtro" id="filtro-usuarios" type="search" placeholder="Filtrar por nome, login ou setor">
+            <button class="btn btn-primario" id="btn-add-usuario">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+              Adicionar usuário
+            </button>
+          </div>
           <div id="lista-usuarios" class="lista-usuarios"></div>
+        </div>
+        <div id="aba-agentes" hidden>
+          <div class="barra-aba">
+            <p class="muted">Agentes de conversa do Dify. Cada um usa a própria chave de API, que fica só no servidor.</p>
+            <button class="btn btn-primario" id="btn-add-agente">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+              Adicionar agente
+            </button>
+          </div>
+          <div id="lista-agentes" class="lista-usuarios"></div>
         </div>
         <div id="aba-acessos" hidden>
           <div id="lista-acessos" class="lista-acessos"></div>
@@ -161,7 +182,47 @@
         <option value="usuario">Usuário</option>
         <option value="admin">Administrador</option>
       </select>
+      <label>Agentes liberados</label>
+      <p class="muted dica" id="agentes-novo-dica">Marque os agentes que a pessoa vai poder usar.</p>
+      <div id="agentes-novo" class="lista-checks"></div>
       <div id="resultado-ad" class="resultado-ad"><p class="muted">Digite pelo menos 2 letras.</p></div>
+    </form>
+  </dialog>
+
+  <!-- modal: agentes de um usuário -->
+  <dialog id="dlg-agentes-usuario" class="dialogo">
+    <form method="dialog" class="dialogo-corpo" id="form-agentes-usuario">
+      <h3 id="agentes-usuario-titulo">Agentes</h3>
+      <p class="muted dica" id="agentes-usuario-dica"></p>
+      <div id="agentes-usuario-lista" class="lista-checks"></div>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
+        <button class="btn btn-primario" value="ok" id="agentes-usuario-salvar">Salvar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- modal: adicionar / editar agente -->
+  <dialog id="dlg-agente" class="dialogo">
+    <form method="dialog" class="dialogo-corpo" id="form-agente" novalidate>
+      <h3 id="agente-titulo">Adicionar agente</h3>
+      <p class="muted dica" id="agente-dica-chave">No Dify, abra o agente &gt; <b>Acesso à API</b> &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b> e cole aqui. O nome, a descrição e o ícone vêm do Dify.</p>
+      <label for="agente-chave" id="agente-chave-rotulo">Chave da API do Dify</label>
+      <input id="agente-chave" type="password" autocomplete="off" spellcheck="false" placeholder="app-…" maxlength="200">
+      <label for="agente-nome">Nome exibido</label>
+      <input id="agente-nome" maxlength="120" placeholder="Em branco: usa o nome do app no Dify">
+      <div id="agente-campos-edicao">
+        <label for="agente-descricao">Descrição (aparece na tela inicial do chat)</label>
+        <textarea id="agente-descricao" rows="2" maxlength="1000"></textarea>
+        <label for="agente-sugestoes">Perguntas de exemplo (uma por linha; opcional: <i>Categoria | pergunta</i>)</label>
+        <textarea id="agente-sugestoes" rows="4" placeholder="Produto | Tudo sobre o FLEXX AG 2032"></textarea>
+        <p class="muted dica">Se o app tiver perguntas sugeridas configuradas no Dify, elas têm prioridade sobre estas.</p>
+      </div>
+      <p id="agente-erro" class="erro" role="alert" hidden></p>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
+        <button class="btn btn-primario" id="agente-salvar" type="submit">Salvar</button>
+      </div>
     </form>
   </dialog>
 
@@ -182,6 +243,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=1" type="module"></script>
+  <script src="/assets/app.js?v=2" type="module"></script>
 </body>
 </html>
