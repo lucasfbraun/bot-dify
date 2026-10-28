@@ -135,7 +135,12 @@ async def conversas(req: Request, user: str, limit: int = 20, last_id: str | Non
         return _negado()
     itens = sorted([c for c in CONVERSAS.values() if c["user"] == user and c["app"] == chave],
                    key=lambda c: -c["updated_at"])
-    return {"data": [{k: c[k] for k in ("id", "name", "created_at", "updated_at")} for c in itens], "has_more": False}
+    if last_id:  # paginação como no Dify: continua depois da última conversa da página anterior
+        ids = [c["id"] for c in itens]
+        itens = itens[ids.index(last_id) + 1:] if last_id in ids else []
+    pagina = itens[:limit]
+    return {"data": [{k: c[k] for k in ("id", "name", "created_at", "updated_at")} for c in pagina],
+            "has_more": len(itens) > limit}
 
 
 @app.get("/v1/messages")
@@ -145,7 +150,25 @@ async def mensagens(req: Request, user: str, conversation_id: str, limit: int = 
         return _negado()
     if not _conversa_do(chave, user, conversation_id):
         return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
-    return {"data": MENSAGENS.get(conversation_id, []), "has_more": False}
+    lst = MENSAGENS.get(conversation_id, [])  # em ordem de criação
+    if first_id:  # como no Dify: as mensagens anteriores a first_id
+        ids = [m["id"] for m in lst]
+        lst = lst[:ids.index(first_id)] if first_id in ids else []
+    return {"data": lst[-limit:], "has_more": len(lst) > limit}
+
+
+@app.post("/teste/conversa")
+async def teste_conversa(req: Request):
+    """Só para testes: cria direto uma conversa com N mensagens e datas no passado."""
+    b = await req.json()
+    cid = str(uuid.uuid4())
+    quando = int(time.time()) - int(b.get("dias_atras", 0) * 86400)
+    CONVERSAS[cid] = {"id": cid, "name": b.get("nome", "Conversa de teste"), "user": b["user"], "app": b["chave"],
+                      "created_at": quando, "updated_at": quando + 60}
+    MENSAGENS[cid] = [{"id": str(uuid.uuid4()), "conversation_id": cid, "query": f"Pergunta {i + 1}",
+                       "answer": f"Resposta {i + 1}", "created_at": quando + i, "feedback": None,
+                       "retriever_resources": []} for i in range(b.get("mensagens", 1))]
+    return {"id": cid}
 
 
 @app.post("/v1/conversations/{cid}/name")

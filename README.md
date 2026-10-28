@@ -6,7 +6,8 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Cada usuário só vê os agentes liberados para ele.** No cadastro, o admin marca os agentes de cada pessoa. A permissão é conferida a cada requisição no servidor, então tirar a marca corta o acesso na hora, até com a tela aberta.
 - **Administradores recebem todos os agentes**, inclusive os cadastrados depois, e podem desmarcar os que não querem usar no chat. Na tela de administração, eles continuam vendo todos.
 - **Login com o usuário e a senha da rede** (AD `flexivel.local`). Aceita `nome.sobrenome`, `FLEXIVEL\nome.sobrenome` ou `nome.sobrenome@flexivel.local`. Só entra quem está cadastrado.
-- **Registro de acessos**: logins ok, senha errada, pessoa sem liberação, conta desabilitada no AD e bloqueio por tentativas.
+- **Registros com filtros**: logins (ok, senha errada, sem liberação, conta desabilitada, bloqueio) e uso dos agentes (perguntas, erros, áudios), filtráveis por usuário, agente, tipo e período.
+- **Conversas de todos os usuários**: o administrador lê qualquer conversa de qualquer agente e exporta em TXT a conversa aberta, as selecionadas ou todas as do filtro.
 - **Chat com streaming**: seletor de agente na barra lateral (e atalhos na tela inicial), histórico separado por agente, status do que o agente está fazendo (consultando o Qlik, buscando certificados etc.), renomear/apagar, copiar e avaliar (👍/👎 vão para os registros do Dify).
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
@@ -52,6 +53,56 @@ Só servem apps de **conversa**: *Chatbot*, *Agente* e *Chatflow*. Apps do tipo 
 | Acesso tirado com a tela aberta | Na próxima ação, a pessoa vê o aviso e a tela passa para os agentes que sobraram. |
 
 Cada pessoa é identificada no Dify como `ad:<login>`. As conversas de cada agente ficam no app correspondente do Dify, então cada agente tem o próprio histórico e ninguém vê conversa de outra pessoa.
+
+## Registros e conversas (administração)
+
+As duas abas ficam em **menu do avatar → Administração**.
+
+### Registros
+
+Junta dois tipos de evento numa lista só, do mais novo para o mais antigo:
+
+| Tipo | Eventos | Onde fica |
+|---|---|---|
+| **Login** | Entrou, senha inválida, sem acesso liberado, acesso desativado, conta desabilitada no AD, bloqueio por tentativas, erro no AD | IP de quem tentou |
+| **Uso dos agentes** | Pergunta ao agente, erro na resposta (com o motivo), áudio transcrito (com o tamanho) | Agente usado e link **Ver conversa** |
+
+Filtros disponíveis:
+
+- **Usuário**: aceita `nome.sobrenome`, `FLEXIVEL
+ome.sobrenome` ou `nome.sobrenome@flexivel.local`, com sugestões dos cadastrados.
+- **Agente**.
+- **Tipo**: logins e uso, só logins ou só uso.
+- **Período (De / Até)**: começa nos últimos 7 dias.
+
+Ao escolher um agente, os logins somem da lista, porque o login não pertence a nenhum agente. A tela mostra até 1.000 registros; para ver os anteriores, use um período menor.
+
+O registro de uso guarda **só os metadados** (quem, quando, qual agente e qual conversa). O conteúdo das perguntas e respostas continua só no Dify. O uso começa a ser registrado a partir desta versão; os logins antigos continuam lá.
+
+### Conversas
+
+Lista as conversas de **todos os usuários em todos os agentes**, buscadas direto no Dify, com os mesmos filtros: usuário, agente e período. O período começa nos últimos 30 dias e vale pela última atividade da conversa.
+
+- **Ver**: abre a conversa inteira, só para leitura, com horários, fontes consultadas e avaliações 👍/👎.
+- **Exportar TXT**, de três jeitos:
+  - **a conversa aberta**: botão *Exportar TXT* no leitor;
+  - **as selecionadas**: marque as caixinhas e clique em *Exportar selecionadas*;
+  - **todas as do filtro**: *Exportar todas (TXT)*, que leva todas as conversas do filtro, mesmo as que não cabem na tela (a lista mostra as 500 mais recentes).
+
+O arquivo `conversas-AAAAMMDD-HHMM.txt` sai em UTF-8 com quebras de linha do Windows, então abre certinho no Bloco de Notas. Para cada conversa, ele traz:
+
+- um cabeçalho com título, usuário, agente, período, número de mensagens e ID;
+- cada pergunta e resposta, com data e hora;
+- as fontes consultadas e a avaliação, quando houver.
+
+O limite é de 1.000 conversas por arquivo (`EXPORTAR_MAX_CONVERSAS`); acima disso, filtre por período, usuário ou agente.
+
+Detalhes que valem saber:
+
+- **Auditoria**: abrir e exportar conversas fica registrado na tabela de auditoria (quem, quando e quais conversas).
+- **Privacidade (LGPD)**: os usuários devem saber que as conversas podem ser lidas pela administração. Vale incluir isso na política interna de uso.
+- **De onde vêm as conversas**: o Dify só lista conversas por usuário, então a plataforma consulta cada combinação de usuário e agente. Entram os usuários cadastrados e também quem já foi removido mas usou algum agente a partir desta versão. Conversas feitas fora desta plataforma (por exemplo, no WebApp do Dify) não aparecem.
+- Ao consultar um usuário num agente que ele nunca usou, o Dify cria um registro de usuário final vazio para o app. Isso não aparece nos logs do Dify e não afeta nada.
 
 ## Perguntas por áudio
 
@@ -154,6 +205,8 @@ python tests/test_api.py              # em outro terminal: teste ponta a ponta d
 python tests/test_migracao.py         # não precisa do servidor: atualização de um banco da versão antiga
 pip install playwright && python tests/test_ui.py   # interface no Chrome, com microfone simulado (prints em tests/prints/)
 ```
+
+O Dify falso pagina como o de verdade (100 conversas por página; mensagens das mais novas para as mais antigas) e tem uma rota só de teste (`POST /teste/conversa`) que cria conversas com datas no passado e muitas mensagens. Com ela, os testes conferem a paginação (121 conversas; uma conversa com 250 mensagens) e os filtros por data.
 
 `test_api.py` e `test_ui.py` esperam um servidor recém-iniciado: reinicie o `dev_server.py` entre um e outro.
 

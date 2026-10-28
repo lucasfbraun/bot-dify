@@ -39,6 +39,10 @@ class Settings:
     # O navegador grava em WAV 16 kHz mono: ~1,9 MB por minuto, e limita a gravação a 5 min (~9,6 MB).
     AUDIO_MAX_MB = int(os.getenv("AUDIO_MAX_MB", "12"))
 
+    # Registros e exportação de conversas
+    FUSO_HORARIO = os.getenv("FUSO_HORARIO", "America/Sao_Paulo")   # filtros por data e horários do TXT
+    EXPORTAR_MAX_CONVERSAS = int(os.getenv("EXPORTAR_MAX_CONVERSAS", "1000"))
+
     # Proteção de login
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
     LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "10"))

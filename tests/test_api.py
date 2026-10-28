@@ -3,9 +3,12 @@ import io
 import json
 import math
 import os
+import re
 import struct
 import sys
 import wave
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -259,6 +262,106 @@ ok(adm.delete("/api/admin/usuarios/carlos.souza").status_code == 200, "remove ca
 r = adm.post("/api/admin/usuarios", json={"usuario": "carlos.souza", "perfil": "usuario"})
 ok(r.json()["agentes"] == [], "ao voltar, carlos não herda acessos antigos")
 
+# ------------------------------------------------------------------ registros
+secao("registros: logins + uso dos agentes, com filtros")
+FUSO = ZoneInfo("America/Sao_Paulo")
+hoje = datetime.now(FUSO).date()
+dia = lambda n: (hoje + timedelta(days=n)).isoformat()  # noqa: E731
+COM2 = com2["id"]
+
+regs = adm.get("/api/admin/registros").json()["itens"]
+tipos_uso = {(r["username"], r["agente_nome"], r["evento"]) for r in regs if r["tipo"] == "uso"}
+ok(("maria.silva", "Agente Comercial", "pergunta") in tipos_uso, "pergunta da maria ao comercial registrada")
+ok(("admin.ti", "Agente Técnico PU(qlik)", "audio") in tipos_uso, "áudio transcrito registrado")
+ok(("maria.silva", "Agente Técnico PU(qlik)", "erro") in tipos_uso, "pergunta com erro registrada como erro")
+ok(any(r["tipo"] == "acesso" and r["evento"] == "senha_invalida" for r in regs), "logins continuam no registro")
+ok(regs == sorted(regs, key=lambda r: r["quando"], reverse=True), "do mais novo para o mais antigo")
+r = adm.get("/api/admin/registros", params={"usuario": "maria.silva"}).json()["itens"]
+ok(r and all(x["username"] == "maria.silva" for x in r), "filtro por usuário")
+r = adm.get("/api/admin/registros", params={"usuario": "FLEXIVEL\\Maria.Silva"}).json()["itens"]
+ok(r and all(x["username"] == "maria.silva" for x in r), "filtro por usuário aceita DOMINIO\\login")
+r = adm.get("/api/admin/registros", params={"agente": PU}).json()["itens"]
+ok(r and all(x["tipo"] == "uso" and x["agente_id"] == PU for x in r), "filtro por agente traz só o uso daquele agente")
+r = adm.get("/api/admin/registros", params={"tipo": "acessos"}).json()["itens"]
+ok(r and all(x["tipo"] == "acesso" for x in r), "filtro só logins")
+r = adm.get("/api/admin/registros", params={"tipo": "uso", "usuario": "admin.ti"}).json()["itens"]
+ok(r and all(x["tipo"] == "uso" and x["username"] == "admin.ti" for x in r), "filtro só uso + usuário")
+ok(len(adm.get("/api/admin/registros", params={"inicio": dia(0), "fim": dia(0)}).json()["itens"]) > 10, "período de hoje traz os registros")
+ok(adm.get("/api/admin/registros", params={"inicio": dia(1)}).json()["itens"] == [], "início amanhã: nada")
+ok(adm.get("/api/admin/registros", params={"fim": dia(-1)}).json()["itens"] == [], "fim ontem: nada")
+ok(adm.get("/api/admin/registros", params={"inicio": "28/10/2026"}).status_code == 400, "data em formato errado -> 400")
+ok(adm.get("/api/admin/registros", params={"inicio": dia(0), "fim": dia(-2)}).status_code == 400, "início depois do fim -> 400")
+ok(adm.get("/api/admin/registros", params={"tipo": "x"}).status_code == 400, "tipo inválido -> 400")
+ok(carlos.get("/api/admin/registros").status_code in (401, 403), "usuário comum não vê registros")
+
+# ------------------------------------------------------------------ conversas de todos
+secao("conversas de todos os usuários: listar, ver e exportar")
+FAKE = f"http://127.0.0.1:{os.getenv('DIFY_PORT', '8099')}"
+for i in range(120):  # passa de 100: obriga a paginar no Dify
+    httpx.post(f"{FAKE}/teste/conversa", json={"chave": CHAVE_PU, "user": "ad:carlos.souza", "nome": f"Lote {i:03d}",
+                                                "dias_atras": 2})
+longa = httpx.post(f"{FAKE}/teste/conversa", json={"chave": CHAVE_PU, "user": "ad:carlos.souza", "nome": "Conversa longa",
+                                                   "mensagens": 250, "dias_atras": 1}).json()["id"]
+antiga = httpx.post(f"{FAKE}/teste/conversa", json={"chave": CHAVE_COMERCIAL, "user": "ad:maria.silva",
+                                                    "nome": "Conversa antiga", "dias_atras": 40}).json()["id"]
+
+todas = adm.get("/api/admin/conversas").json()
+ok(todas["avisos"] == [], "sem avisos de erro")
+itens = todas["itens"]
+conv_maria = next((c for c in itens if c["id"] == cid_maria), None)
+ok(conv_maria and conv_maria["usuario"] == "Maria Silva" and conv_maria["agente_id"] == COM2 and conv_maria["titulo"] == "Colchões",
+   "admin enxerga a conversa da maria (com nome, agente e título)")
+ok(any(c["username"] == "admin.ti" and c["agente_id"] == PU for c in itens), "e as do próprio admin no PU")
+ok(itens == sorted(itens, key=lambda c: -c["atualizado"]), "mais recentes primeiro")
+r = adm.get("/api/admin/conversas", params={"usuario": "carlos.souza", "agente": PU}).json()["itens"]
+ok(len(r) == 121, f"paginação: as 121 conversas do carlos no PU ({len(r)})")
+r = adm.get("/api/admin/conversas", params={"usuario": "maria.silva"}).json()["itens"]
+ok(r and all(c["username"] == "maria.silva" for c in r), "filtro por usuário")
+r = adm.get("/api/admin/conversas", params={"agente": COM2}).json()["itens"]
+ok(r and all(c["agente_id"] == COM2 for c in r), "filtro por agente")
+r = adm.get("/api/admin/conversas", params={"usuario": "maria.silva", "inicio": dia(-10)}).json()["itens"]
+ok(antiga not in [c["id"] for c in r] and cid_maria in [c["id"] for c in r], "início há 10 dias esconde a conversa de 40 dias")
+r = adm.get("/api/admin/conversas", params={"usuario": "maria.silva", "fim": dia(-30)}).json()["itens"]
+ok([c["id"] for c in r] == [antiga], "fim há 30 dias traz só a antiga")
+ok(adm.get("/api/admin/conversas", params={"agente": 9999}).status_code == 404, "agente inexistente -> 404")
+ok(adm.get("/api/admin/conversas", params={"usuario": "x y"}).status_code == 400, "usuário inválido -> 400")
+ok(carlos.get("/api/admin/conversas").status_code in (401, 403), "usuário comum não lista conversas")
+
+r = adm.get(f"/api/admin/conversas/{COM2}/maria.silva/{cid_maria}").json()["mensagens"]
+ok(len(r) == 1 and r[0]["pergunta"].startswith("Quais espumas") and r[0]["avaliacao"] == "like", "admin lê a conversa da maria")
+r = adm.get(f"/api/admin/conversas/{PU}/carlos.souza/{longa}").json()["mensagens"]
+ok(len(r) == 250 and r[0]["pergunta"] == "Pergunta 1" and r[-1]["pergunta"] == "Pergunta 250",
+   "conversa de 250 mensagens chega inteira e em ordem")
+ok(adm.get(f"/api/admin/conversas/{PU}/maria.silva/{cid_maria}").status_code == 404, "conversa em outro agente -> 404")
+ok(adm.get(f"/api/admin/conversas/{PU}/carlos.souza/abc").status_code == 400, "id inválido -> 400")
+ok(carlos.get(f"/api/admin/conversas/{COM2}/maria.silva/{cid_maria}").status_code in (401, 403), "usuário comum não lê")
+
+r = adm.post("/api/admin/conversas/exportar", json={"itens": [
+    {"agente_id": COM2, "username": "maria.silva", "conversation_id": cid_maria, "titulo": "Colchões",
+     "criado": conv_maria["criado"], "atualizado": conv_maria["atualizado"]}]})
+txt = r.text
+ok(r.status_code == 200 and r.headers["content-type"].startswith("text/plain") and "charset=utf-8" in r.headers["content-type"],
+   "exportar selecionada: TXT em UTF-8")
+ok(re.search(r'attachment; filename="conversas-\d{8}-\d{4}\.txt"', r.headers.get("content-disposition", "")), "baixa como arquivo .txt")
+ok(txt.startswith("﻿") and "\r\n" in txt, "BOM e quebras de linha do Windows (abre certo no Bloco de Notas)")
+ok("Conversa: Colchões" in txt and "Usuário:  Maria Silva (maria.silva)" in txt and "Agente:   Comercial" in txt,
+   "cabeçalho com título, usuário e agente")
+ok("Quais espumas temos para colchões?" in txt and "Não tenho acesso ao ERP" in txt and "Avaliação: útil" in txt,
+   "pergunta, resposta e avaliação no TXT")
+ok(re.search(r"\[\d{2}/\d{2}/\d{4} \d{2}:\d{2}\] Maria Silva:", txt), "horário em dd/mm/aaaa hh:mm")
+r = adm.post("/api/admin/conversas/exportar", json={"filtro": {"usuario": "carlos.souza", "agente": PU}})
+ok(r.status_code == 200 and "121 conversa(s)" in r.text and r.text.count("Conversa: Lote ") == 120 and "Pergunta 250" in r.text,
+   "exportar todas do filtro (121 conversas, inclusive a longa inteira)")
+ok(adm.post("/api/admin/conversas/exportar", json={"filtro": {"inicio": dia(1)}}).status_code == 404, "filtro sem conversas -> 404")
+ok(adm.post("/api/admin/conversas/exportar", json={}).status_code == 400, "sem itens nem filtro -> 400")
+ok(adm.post("/api/admin/conversas/exportar", json={"itens": [{"agente_id": 9999, "username": "maria.silva",
+                                                              "conversation_id": cid_maria}]}).status_code == 404, "agente inexistente -> 404")
+ok(adm.post("/api/admin/conversas/exportar", json={"itens": [{"agente_id": COM2, "username": "maria.silva",
+                                                              "conversation_id": "../../x/../y"}]}).status_code == 400, "id inválido -> 400")
+ok(carlos.post("/api/admin/conversas/exportar", json={"filtro": {}}).status_code in (401, 403), "usuário comum não exporta")
+ok(httpx.post(f"{B}/api/admin/conversas/exportar", json={"filtro": {}}, cookies=adm.cookies).status_code == 403,
+   "exportar sem cabeçalho CSRF -> 403")
+
 # ------------------------------------------------------------------ regras que já existiam
 secao("regras de acesso existentes")
 ok(adm.patch("/api/admin/usuarios/maria.silva", json={"ativo": False}).status_code == 200, "admin desativa maria")
@@ -277,5 +380,10 @@ ok(anon.get("/sw.js").status_code == 200, "sw.js servido")
 ok(anon.get("/admin").status_code == 200 and "tela-login" in anon.get("/admin").text, "rota SPA")
 ok("default-src 'self'" in anon.get("/").headers["content-security-policy"], "CSP presente")
 ok(anon.get("/api/conversas").status_code == 404, "rotas antigas sem agente não existem mais")
+
+secao("conversas de quem foi removido continuam visíveis")
+ok(adm.delete("/api/admin/usuarios/maria.silva").status_code == 200, "remove a maria")
+r = adm.get("/api/admin/conversas", params={"agente": COM2}).json()["itens"]
+ok(any(c["id"] == cid_maria and c["usuario"] == "maria.silva" for c in r), "conversa dela ainda aparece (pelo histórico de uso)")
 print("\nfalhas:", falhas)
 sys.exit(1 if falhas else 0)

@@ -26,6 +26,11 @@ const RESULTADO_ACESSO = {
   nao_encontrado: ['Não existe no AD', 'falha'],
   erro_ldap: ['Erro ao falar com o AD', 'falha'],
 };
+const EVENTO_USO = {
+  pergunta: ['Pergunta ao agente', 'ok'],
+  erro: ['Erro na resposta', 'falha'],
+  audio: ['Áudio transcrito', 'ok'],
+};
 
 const estado = {
   usuario: null,
@@ -1186,10 +1191,12 @@ function trocarAba(aba) {
   }
   $('#aba-usuarios').hidden = aba !== 'usuarios';
   $('#aba-agentes').hidden = aba !== 'agentes';
+  $('#aba-conversas').hidden = aba !== 'conversas';
   $('#aba-acessos').hidden = aba !== 'acessos';
   if (aba === 'usuarios') carregarUsuarios();
   else if (aba === 'agentes') carregarAgentesAdmin();
-  else if (aba === 'acessos') carregarAcessos();
+  else if (aba === 'conversas') abrirConversasAdmin();
+  else if (aba === 'acessos') abrirRegistros();
 }
 
 /* ------------------------------------------------------------------ administração */
@@ -1492,23 +1499,266 @@ async function salvarAgente(e) {
   }
 }
 
-async function carregarAcessos() {
-  const lista = $('#lista-acessos');
-  lista.innerHTML = '<p class="muted">Carregando…</p>';
-  try {
-    const { itens } = await getJSON('/api/admin/acessos');
-    lista.innerHTML = itens.length ? '' : '<p class="muted">Nenhum acesso registrado ainda.</p>';
-    for (const a of itens) {
-      const [rotulo, classe] = RESULTADO_ACESSO[a.resultado] || [a.resultado, 'falha'];
-      const d = document.createElement('div');
-      d.className = 'acesso';
-      d.innerHTML = `<span>${esc(dataHora(a.quando))}</span><span>${esc(a.username || '—')}</span>`
-        + `<span class="${classe}" title="${esc(a.detalhe || '')}">${esc(rotulo)}</span><span class="muted">${esc(a.ip || '')}</span>`;
-      lista.appendChild(d);
+/* ---- filtros comuns (Conversas e Registros) ---- */
+const hojeISO = (dias = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() + dias);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
+/* usuários e agentes para os filtros (vêm das outras abas; carrega se ainda não veio) */
+async function prepararFiltrosAdmin() {
+  if (!estado.usuarios.length || !estado.adminAgentes.length) {
+    try {
+      const [usuarios, agentes] = await Promise.all([getJSON('/api/admin/usuarios'), getJSON('/api/admin/agentes')]);
+      estado.usuarios = usuarios.itens;
+      estado.adminAgentes = agentes.itens;
+    } catch (e) {
+      toast(e.message);
     }
+  }
+  $('#lista-logins').innerHTML = estado.usuarios
+    .map((u) => `<option value="${esc(u.username)}">${esc(u.nome || u.username)}</option>`).join('');
+  for (const id of ['#conv-agente', '#reg-agente']) {
+    const sel = $(id);
+    const atual = sel.value;
+    sel.innerHTML = '<option value="">Todos os agentes</option>' + estado.adminAgentes
+      .map((a) => `<option value="${a.id}">${esc(a.nome)}${a.ativo ? '' : ' (inativo)'}</option>`).join('');
+    sel.value = atual;
+  }
+}
+
+function lerFiltros(prefixo) {
+  const f = {};
+  const usuario = $(`#${prefixo}-usuario`).value.trim();
+  const agente = $(`#${prefixo}-agente`).value;
+  const inicio = $(`#${prefixo}-inicio`).value;
+  const fim = $(`#${prefixo}-fim`).value;
+  if (usuario) f.usuario = usuario;
+  if (agente) f.agente = Number(agente);
+  if (inicio) f.inicio = inicio;
+  if (fim) f.fim = fim;
+  return f;
+}
+
+const paraQuery = (f) => new URLSearchParams(Object.entries(f).map(([k, v]) => [k, String(v)])).toString();
+
+/* ---- aba Registros ---- */
+let registrosIniciados = false;
+
+async function abrirRegistros() {
+  await prepararFiltrosAdmin();
+  if (!registrosIniciados) {
+    registrosIniciados = true;
+    $('#reg-inicio').value = hojeISO(-7);
+  }
+  carregarRegistros();
+}
+
+async function carregarRegistros() {
+  const lista = $('#lista-acessos');
+  const resumo = $('#reg-resumo');
+  const f = { ...lerFiltros('reg'), tipo: $('#reg-tipo').value };
+  lista.innerHTML = '<p class="muted">Carregando…</p>';
+  resumo.textContent = '';
+  try {
+    const { itens, cortado } = await getJSON(`/api/admin/registros?${paraQuery(f)}`);
+    lista.innerHTML = itens.length ? '' : '<p class="muted">Nenhum registro com esses filtros.</p>';
+    resumo.textContent = itens.length
+      ? `${itens.length} registro${itens.length === 1 ? '' : 's'}${cortado ? ' (os mais recentes; refine os filtros para ver os anteriores)' : ''}`
+        + (f.agente ? ' · com agente escolhido, os logins não aparecem (login não pertence a um agente)' : '')
+      : '';
+    const frag = document.createDocumentFragment();
+    for (const r of itens) {
+      const uso = r.tipo === 'uso';
+      const [rotulo, classe] = (uso ? EVENTO_USO[r.evento] : RESULTADO_ACESSO[r.evento]) || [r.evento, 'falha'];
+      const d = document.createElement('div');
+      d.className = `acesso${uso ? ' uso' : ''}`;
+      const detalhe = uso ? r.detalhe || '' : [r.ip, r.detalhe].filter(Boolean).join(' · ');
+      d.innerHTML = `<span>${esc(dataHora(r.quando))}</span><span class="reg-usuario">${esc(r.username || '—')}</span>`
+        + `<span class="${classe}">${esc(rotulo)}</span><span class="reg-agente">${esc(r.agente_nome || (uso ? '—' : ''))}</span>`
+        + `<span class="muted reg-detalhe" title="${esc(detalhe)}">${esc(detalhe)}</span>`;
+      if (uso && r.conversation_id && r.agente_id) {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-texto reg-ver';
+        b.textContent = 'Ver conversa';
+        b.addEventListener('click', () => abrirConversaAdmin({
+          agente_id: r.agente_id, agente: r.agente_nome, username: r.username, usuario: nomeDoUsuario(r.username),
+          id: r.conversation_id, titulo: 'Conversa',
+        }));
+        d.appendChild(b);
+      }
+      frag.appendChild(d);
+    }
+    lista.appendChild(frag);
   } catch (e) {
     lista.innerHTML = '';
     lista.appendChild(erroBox(e.message));
+  }
+}
+
+const nomeDoUsuario = (login) => estado.usuarios.find((u) => u.username === login)?.nome || login;
+
+/* ---- aba Conversas ---- */
+const LIMITE_LISTA_CONVERSAS = 500;  // a tela mostra até 500; exportar todas leva o filtro inteiro
+let conversasIniciadas = false;
+let convAdmin = { itens: [], filtro: {}, marcadas: new Set() };
+const chaveConv = (c) => `${c.agente_id}|${c.username}|${c.id}`;
+
+async function abrirConversasAdmin() {
+  await prepararFiltrosAdmin();
+  if (!conversasIniciadas) {
+    conversasIniciadas = true;
+    $('#conv-inicio').value = hojeISO(-30);
+    buscarConversasAdmin();
+  }
+}
+
+async function buscarConversasAdmin() {
+  const lista = $('#lista-conv-admin');
+  const filtro = lerFiltros('conv');
+  $('#barra-conversas').hidden = true;
+  $('#conv-avisos').innerHTML = '';
+  lista.innerHTML = '<p class="muted"><span class="spinner" style="display:inline-block;vertical-align:-2px"></span> Buscando as conversas no Dify…</p>';
+  try {
+    const { itens, avisos } = await getJSON(`/api/admin/conversas?${paraQuery(filtro)}`);
+    convAdmin = { itens, filtro, marcadas: new Set() };
+    for (const a of avisos) $('#conv-avisos').appendChild(erroBox(a));
+    desenharConversasAdmin();
+  } catch (e) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(e.message));
+  }
+}
+
+function desenharConversasAdmin() {
+  const lista = $('#lista-conv-admin');
+  const { itens } = convAdmin;
+  lista.innerHTML = '';
+  $('#barra-conversas').hidden = !itens.length;
+  if (!itens.length) {
+    lista.innerHTML = '<p class="muted">Nenhuma conversa com esses filtros.</p>';
+    return;
+  }
+  const frag = document.createDocumentFragment();
+  for (const c of itens.slice(0, LIMITE_LISTA_CONVERSAS)) {
+    const d = document.createElement('div');
+    d.className = 'conv-linha';
+    d.innerHTML = `<input type="checkbox" aria-label="Selecionar ${esc(c.titulo)}"${convAdmin.marcadas.has(chaveConv(c)) ? ' checked' : ''}>
+      <div class="info"><div class="nome" title="${esc(c.titulo)}">${esc(c.titulo)}</div>
+        <div class="sub">${esc(c.usuario)}${c.usuario !== c.username ? ` (${esc(c.username)})` : ''} · ${esc(c.agente)}</div></div>
+      <div class="sub quando">${esc(dataHora(c.atualizado))}</div>
+      <button type="button" class="btn btn-texto">Ver</button>`;
+    $('input', d).addEventListener('change', (ev) => {
+      if (ev.target.checked) convAdmin.marcadas.add(chaveConv(c));
+      else convAdmin.marcadas.delete(chaveConv(c));
+      atualizarBarraConversas();
+    });
+    $('button', d).addEventListener('click', () => abrirConversaAdmin(c));
+    frag.appendChild(d);
+  }
+  lista.appendChild(frag);
+  if (itens.length > LIMITE_LISTA_CONVERSAS) {
+    lista.insertAdjacentHTML('beforeend', `<p class="muted">Mostrando as ${LIMITE_LISTA_CONVERSAS} mais recentes de ${itens.length}. `
+      + '"Exportar todas" leva todas as do filtro.</p>');
+  }
+  atualizarBarraConversas();
+}
+
+function atualizarBarraConversas() {
+  const total = convAdmin.itens.length;
+  const n = convAdmin.marcadas.size;
+  const visiveis = Math.min(total, LIMITE_LISTA_CONVERSAS);
+  $('#conv-resumo').textContent = `${total} conversa${total === 1 ? '' : 's'}${n ? ` · ${n} selecionada${n === 1 ? '' : 's'}` : ''}`;
+  $('#conv-todas').checked = n > 0 && n === visiveis;
+  $('#conv-todas').indeterminate = n > 0 && n < visiveis;
+  $('#btn-exportar-sel').disabled = !n;
+  $('#btn-exportar-sel').textContent = n ? `Exportar selecionadas (${n})` : 'Exportar selecionadas';
+}
+
+function marcarTodasConversas(marcar) {
+  convAdmin.marcadas = new Set(marcar ? convAdmin.itens.slice(0, LIMITE_LISTA_CONVERSAS).map(chaveConv) : []);
+  for (const i of $$('.conv-linha input', $('#lista-conv-admin'))) i.checked = marcar;
+  atualizarBarraConversas();
+}
+
+const refConversa = (c) => ({ agente_id: c.agente_id, username: c.username, conversation_id: c.id,
+  titulo: c.titulo || '', criado: c.criado ?? null, atualizado: c.atualizado ?? null });
+
+/* baixa o TXT gerado pelo servidor */
+async function exportarConversas(corpo, botao) {
+  const rotulo = botao?.textContent;
+  if (botao) { botao.disabled = true; botao.textContent = 'Gerando o arquivo…'; }
+  try {
+    const r = await api('/api/admin/conversas/exportar', { metodo: 'POST', corpo });
+    const nome = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '')?.[1] || 'conversas.txt';
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nome;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast(`Arquivo ${nome} baixado.`);
+  } catch (e) {
+    toast(e.message, 6000);
+  } finally {
+    if (botao) { botao.disabled = false; botao.textContent = rotulo; }
+  }
+}
+
+async function exportarSelecionadas() {
+  const escolhidas = convAdmin.itens.filter((c) => convAdmin.marcadas.has(chaveConv(c)));
+  if (escolhidas.length) await exportarConversas({ itens: escolhidas.map(refConversa) }, $('#btn-exportar-sel'));
+  atualizarBarraConversas();
+}
+
+async function exportarTodas() {
+  const total = convAdmin.itens.length;
+  if (total > 50) {
+    const ok = await confirmar({ titulo: `Exportar ${total} conversas?`, texto: 'O arquivo pode demorar um pouco para ser gerado.', ok: 'Exportar' });
+    if (ok === null) return;
+  }
+  await exportarConversas({ filtro: convAdmin.filtro }, $('#btn-exportar-tudo'));
+}
+
+/* ---- leitor de conversa (somente leitura) ---- */
+let conversaAberta = null;
+
+async function abrirConversaAdmin(c) {
+  conversaAberta = c;
+  const dlg = $('#dlg-conversa');
+  $('#conv-titulo').textContent = c.titulo || 'Conversa';
+  $('#conv-sub').textContent = `${c.usuario || c.username}${c.usuario && c.usuario !== c.username ? ` (${c.username})` : ''} · ${c.agente || ''}`
+    + (c.criado ? ` · ${dataHora(c.criado)} a ${dataHora(c.atualizado)}` : '');
+  const box = $('#conv-mensagens');
+  box.innerHTML = '<p class="muted"><span class="spinner" style="display:inline-block;vertical-align:-2px"></span> Carregando a conversa…</p>';
+  if (!dlg.open) dlg.showModal();
+  try {
+    const { mensagens } = await getJSON(`/api/admin/conversas/${c.agente_id}/${encodeURIComponent(c.username)}/${encodeURIComponent(c.id)}`);
+    if (conversaAberta !== c) return;
+    box.innerHTML = mensagens.length ? '' : '<p class="muted">Conversa sem mensagens.</p>';
+    for (const m of mensagens) {
+      const u = bolhaUsuario(m.pergunta);
+      u.insertAdjacentHTML('afterbegin', `<span class="conv-hora">${esc(dataHora(m.criado))}</span>`);
+      box.appendChild(u);
+      const bot = bolhaBot();
+      renderMarkdown(bot.md, m.resposta || '_(sem resposta)_');
+      if (m.fontes?.length) {
+        bot.conteudo.insertAdjacentHTML('beforeend', `<details class="fontes"><summary>Fontes consultadas (${m.fontes.length})</summary><ul>${m.fontes
+          .map((f) => `<li>${esc(f.documento)}${f.base ? ` <span class="muted">· ${esc(f.base)}</span>` : ''}</li>`).join('')}</ul></details>`);
+      }
+      if (m.avaliacao) {
+        bot.conteudo.insertAdjacentHTML('beforeend', `<p class="conv-avaliacao ${m.avaliacao}">${m.avaliacao === 'like' ? '👍 Avaliada como útil' : '👎 Avaliada como ruim'}</p>`);
+      }
+      box.appendChild(bot.raiz);
+    }
+  } catch (e) {
+    if (conversaAberta !== c) return;
+    box.innerHTML = '';
+    box.appendChild(erroBox(e.status === 404 ? 'Conversa não encontrada no Dify (pode ter sido apagada).' : e.message));
   }
 }
 
@@ -1676,6 +1926,19 @@ function ligarEventos() {
   $('#perfil-novo').addEventListener('change', ajustarAgentesNovo);
   $('#btn-add-agente').addEventListener('click', () => abrirDialogoAgente());
   $('#form-agente').addEventListener('submit', salvarAgente);
+  $('#filtros-registros').addEventListener('submit', (e) => { e.preventDefault(); carregarRegistros(); });
+  $('#filtros-registros').addEventListener('reset', () => setTimeout(carregarRegistros, 0));
+  $('#filtros-conversas').addEventListener('submit', (e) => { e.preventDefault(); buscarConversasAdmin(); });
+  $('#filtros-conversas').addEventListener('reset', () => setTimeout(buscarConversasAdmin, 0));
+  $('#conv-todas').addEventListener('change', (e) => marcarTodasConversas(e.target.checked));
+  $('#btn-exportar-sel').addEventListener('click', exportarSelecionadas);
+  $('#btn-exportar-tudo').addEventListener('click', exportarTodas);
+  $('#conv-fechar').addEventListener('click', () => $('#dlg-conversa').close());
+  $('#conv-fechar2').addEventListener('click', () => $('#dlg-conversa').close());
+  $('#dlg-conversa').addEventListener('close', () => { conversaAberta = null; });
+  $('#conv-exportar').addEventListener('click', () => {
+    if (conversaAberta) exportarConversas({ itens: [refConversa(conversaAberta)] }, $('#conv-exportar'));
+  });
   for (const b of $$('.aba')) b.addEventListener('click', () => trocarAba(b.dataset.aba));
   $('#filtro-usuarios').addEventListener('input', desenharUsuarios);
   $('#busca-ad').addEventListener('input', () => {

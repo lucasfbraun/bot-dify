@@ -66,6 +66,18 @@ CREATE TABLE IF NOT EXISTS meta (
     chave  TEXT PRIMARY KEY,
     valor  TEXT
 );
+-- uso dos agentes (só metadados: o conteúdo das conversas fica no Dify)
+CREATE TABLE IF NOT EXISTS uso (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    quando           TEXT NOT NULL,
+    username         TEXT NOT NULL,
+    agente_id        INTEGER,               -- sem FK: o registro fica mesmo se o agente for removido
+    agente_nome      TEXT,                  -- nome na época
+    evento           TEXT NOT NULL,         -- pergunta, erro, audio
+    conversation_id  TEXT,
+    detalhe          TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_uso_quando ON uso(quando);
 """
 
 
@@ -150,6 +162,61 @@ def registrar_acesso(username: str, ip: str, resultado: str, detalhe: str = "") 
 def listar_acessos(limite: int = 200):
     with conn() as c:
         return [dict(r) for r in c.execute("SELECT * FROM acessos ORDER BY id DESC LIMIT ?", (limite,))]
+
+
+def registrar_uso(username: str, agente_id: int, agente_nome: str, evento: str, conversation_id: str | None = None,
+                  detalhe: str = "") -> None:
+    with conn() as c:
+        c.execute("INSERT INTO uso (quando, username, agente_id, agente_nome, evento, conversation_id, detalhe) "
+                  "VALUES (?,?,?,?,?,?,?)",
+                  (agora(), username.lower(), agente_id, agente_nome, evento, conversation_id, (detalhe or "")[:300]))
+
+
+def listar_registros(usuario: str | None = None, agente_id: int | None = None, inicio: str | None = None,
+                     fim: str | None = None, tipo: str = "todos", limite: int = 500) -> tuple[list[dict], bool]:
+    """Logins (tabela acessos) e uso dos agentes (tabela uso) juntos, do mais novo para o mais antigo.
+    inicio/fim são datas ISO em UTC (mesmo formato gravado, então a comparação de texto funciona).
+    Com filtro de agente só entra o uso, porque login não pertence a nenhum agente.
+    Devolve (itens, cortado) — cortado indica que havia mais registros que o limite."""
+    def filtros(col_agente: bool):
+        cond, args = [], []
+        if usuario:
+            cond.append("username = ?")
+            args.append(usuario.lower())
+        if inicio:
+            cond.append("quando >= ?")
+            args.append(inicio)
+        if fim:
+            cond.append("quando <= ?")
+            args.append(fim)
+        if col_agente and agente_id:
+            cond.append("agente_id = ?")
+            args.append(agente_id)
+        return (" WHERE " + " AND ".join(cond)) if cond else "", args
+
+    partes, args = [], []
+    if tipo in ("todos", "acessos") and not agente_id:
+        w, a = filtros(False)
+        partes.append("SELECT 'acesso' AS tipo, quando, username, NULL AS agente_id, NULL AS agente_nome, "
+                      f"resultado AS evento, NULL AS conversation_id, ip, detalhe FROM acessos{w}")
+        args += a
+    if tipo in ("todos", "uso"):
+        w, a = filtros(True)
+        partes.append("SELECT 'uso' AS tipo, quando, username, agente_id, agente_nome, evento, conversation_id, "
+                      f"NULL AS ip, detalhe FROM uso{w}")
+        args += a
+    if not partes:
+        return [], False
+    sql = " UNION ALL ".join(partes) + " ORDER BY quando DESC LIMIT ?"
+    with conn() as c:
+        itens = [dict(r) for r in c.execute(sql, (*args, limite + 1))]
+    return itens[:limite], len(itens) > limite
+
+
+def usuarios_conhecidos() -> list[str]:
+    """Cadastrados hoje + quem já usou algum agente (as conversas de quem foi removido continuam no Dify)."""
+    with conn() as c:
+        return [r[0] for r in c.execute("SELECT username FROM usuarios UNION SELECT username FROM uso ORDER BY 1")]
 
 
 def auditar(autor: str, acao: str, alvo: str = "", detalhe: str = "") -> None:

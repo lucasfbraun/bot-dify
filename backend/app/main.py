@@ -1,14 +1,17 @@
 """Agentes do Grupo Flexível - frontend dos agentes do Dify (API + arquivos do PWA)."""
+import asyncio
 import json
 import logging
 import os
 import re
 import time
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -414,6 +417,7 @@ async def transcrever_audio(request: Request, ag: dict = Depends(agente_permitid
     texto = str(r.get("text") or "").strip()
     if not texto:
         raise HTTPException(422, "Não consegui entender o áudio. Fale mais perto do microfone e tente de novo.")
+    db.registrar_uso(user["username"], ag["id"], ag["nome"], "audio", None, f"{len(dados) // 1024} KB")
     return {"texto": texto}
 
 
@@ -453,11 +457,13 @@ async def chat(dados: ChatIn, ag: dict = Depends(agente_permitido), user: dict =
     async def gerar():
         enviado_inicio = False
         ultimo_status = None
+        uso = {"conversa": conversa, "erro": "", "fim": False}  # vai para o registro de uso no final
         try:
             async for ev in dify.stream_chat(chave, username, dados.pergunta.strip(), conversa):
                 tipo = ev.get("event")
                 if not enviado_inicio and ev.get("conversation_id"):
                     enviado_inicio = True
+                    uso["conversa"] = ev.get("conversation_id")
                     yield _sse({"t": "inicio", "conversation_id": ev.get("conversation_id"),
                                 "message_id": ev.get("message_id"), "task_id": ev.get("task_id")})
                 if tipo in ("message", "agent_message"):
@@ -471,19 +477,29 @@ async def chat(dados: ChatIn, ag: dict = Depends(agente_permitido), user: dict =
                         ultimo_status = st
                         yield _sse({"t": "status", "v": st})
                 elif tipo == "message_end":
+                    uso["fim"] = True
                     yield _sse({"t": "fim", "conversation_id": ev.get("conversation_id"),
                                 "message_id": ev.get("message_id") or ev.get("id"),
                                 "fontes": _fontes(ev.get("metadata"))})
                 elif tipo == "error":
-                    yield _sse({"t": "erro", "v": ev.get("message") or "Erro no agente."})
+                    uso["erro"] = ev.get("message") or "Erro no agente."
+                    yield _sse({"t": "erro", "v": uso["erro"]})
                 elif tipo == "ping":
                     yield ": ping\n\n"
         except dify.DifyErro as e:
             log.warning("Dify %s: %s", e.status, e.mensagem)
+            uso["erro"] = e.mensagem
             yield _sse({"t": "erro", "v": f"O agente não respondeu ({e.mensagem})."})
         except Exception as e:  # noqa: BLE001
             log.exception("falha no streaming")
+            uso["erro"] = type(e).__name__
             yield _sse({"t": "erro", "v": f"Falha na comunicação com o agente: {type(e).__name__}"})
+        finally:  # roda também quando a pessoa para a resposta ou fecha a página
+            try:
+                db.registrar_uso(username, ag["id"], ag["nome"], "erro" if uso["erro"] else "pergunta", uso["conversa"],
+                                 uso["erro"] or ("" if uso["fim"] else "resposta interrompida"))
+            except Exception:  # noqa: BLE001 - registro nunca derruba o chat
+                log.exception("falha ao registrar uso")
 
     return StreamingResponse(gerar(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -596,6 +612,225 @@ def admin_remover(username: str, admin: dict = Depends(exigir_admin)):
 @app.get("/api/admin/acessos")
 def admin_acessos(admin: dict = Depends(exigir_admin)):
     return {"itens": db.listar_acessos(300)}
+
+
+# ------------------------------------------------------------------ administração: registros e conversas
+try:
+    FUSO = ZoneInfo(settings.FUSO_HORARIO)
+except (ZoneInfoNotFoundError, ValueError):  # imagem sem base de fusos: Brasília não tem horário de verão desde 2019
+    FUSO = timezone(timedelta(hours=-3))
+RX_USUARIO = re.compile(r"[a-z0-9._\-]{1,64}")
+_sem_dify = asyncio.Semaphore(6)  # no máximo 6 chamadas simultâneas ao Dify ao varrer conversas
+
+
+def _periodo(inicio: str | None, fim: str | None) -> tuple[datetime | None, datetime | None]:
+    """Datas AAAA-MM-DD no fuso da empresa -> início do primeiro dia e fim do último dia (com fuso)."""
+    try:
+        ini = datetime.strptime(inicio, "%Y-%m-%d").replace(tzinfo=FUSO) if inicio else None
+        f = datetime.strptime(fim, "%Y-%m-%d").replace(tzinfo=FUSO) + timedelta(days=1, microseconds=-1) if fim else None
+    except ValueError:
+        raise HTTPException(400, "Data inválida (use AAAA-MM-DD).")
+    if ini and f and ini > f:
+        raise HTTPException(400, "A data inicial é depois da data final.")
+    return ini, f
+
+
+def _iso_utc(d: datetime | None) -> str | None:
+    return d.astimezone(timezone.utc).isoformat(timespec="seconds") if d else None
+
+
+def _usuario_param(usuario: str | None) -> str | None:
+    if not usuario:
+        return None
+    u = ldap_auth.normalizar_usuario(usuario)
+    if not RX_USUARIO.fullmatch(u):
+        raise HTTPException(400, "Usuário inválido.")
+    return u
+
+
+@app.get("/api/admin/registros")
+def admin_registros(usuario: str | None = None, agente: int | None = None, inicio: str | None = None,
+                    fim: str | None = None, tipo: str = "todos", admin: dict = Depends(exigir_admin)):
+    if tipo not in ("todos", "acessos", "uso"):
+        raise HTTPException(400, "Tipo inválido.")
+    ini, f = _periodo(inicio, fim)
+    itens, cortado = db.listar_registros(_usuario_param(usuario), agente, _iso_utc(ini), _iso_utc(f), tipo, 1000)
+    return {"itens": itens, "cortado": cortado}
+
+
+async def _conversas_de(ag: dict, username: str, ini: float | None, fim: float | None) -> list[dict]:
+    """Todas as conversas de uma pessoa num agente (o Dify só lista por pessoa), dentro do período."""
+    itens, ultimo = [], None
+    for _ in range(100):  # até 10 mil conversas por pessoa/agente
+        async with _sem_dify:
+            r = await dify.conversas(ag["chave"], username, ultimo, 100)
+        dados = r.get("data") or []
+        for c in dados:
+            criado = c.get("created_at") or 0
+            atualizado = c.get("updated_at") or criado
+            if ini and atualizado < ini:
+                return itens  # a lista vem da mais recente para a mais antiga: daqui para frente é tudo antes
+            if fim and criado > fim:
+                continue
+            itens.append({"id": c["id"], "titulo": c.get("name") or "Nova conversa", "criado": criado,
+                          "atualizado": atualizado})
+        if not r.get("has_more") or not dados:
+            break
+        ultimo = dados[-1]["id"]
+    return itens
+
+
+async def _listar_conversas(usuario: str | None, agente_id: int | None, inicio: str | None,
+                            fim: str | None) -> tuple[list[dict], list[str]]:
+    ini, f = _periodo(inicio, fim)
+    agentes = [a for a in db.list_agentes() if not agente_id or a["id"] == agente_id]
+    if agente_id and not agentes:
+        raise HTTPException(404, "Agente não encontrado.")
+    pessoas = [usuario] if usuario else db.usuarios_conhecidos()
+    nomes = {u["username"]: u["nome"] or u["username"] for u in db.list_users()}
+    pares = [(a, p) for a in agentes for p in pessoas]
+    resultados = await asyncio.gather(
+        *[_conversas_de(a, p, ini.timestamp() if ini else None, f.timestamp() if f else None) for a, p in pares],
+        return_exceptions=True)
+    itens, avisos = [], set()
+    for (a, p), r in zip(pares, resultados):
+        if isinstance(r, BaseException):
+            motivo = r.mensagem if isinstance(r, dify.DifyErro) else type(r).__name__
+            avisos.add(f"Não consegui ler as conversas do agente \"{a['nome']}\" no Dify ({motivo}).")
+            continue
+        for c in r:
+            itens.append({**c, "agente_id": a["id"], "agente": a["nome"], "username": p, "usuario": nomes.get(p, p)})
+    itens.sort(key=lambda c: -(c["atualizado"] or 0))
+    return itens, sorted(avisos)
+
+
+@app.get("/api/admin/conversas")
+async def admin_conversas(usuario: str | None = None, agente: int | None = None, inicio: str | None = None,
+                          fim: str | None = None, admin: dict = Depends(exigir_admin)):
+    itens, avisos = await _listar_conversas(_usuario_param(usuario), agente, inicio, fim)
+    return {"itens": itens, "avisos": avisos}
+
+
+async def _mensagens_completas(ag: dict, username: str, cid: str) -> list[dict]:
+    """Histórico inteiro da conversa (o Dify entrega de 100 em 100, das mais novas para as mais antigas)."""
+    todas, primeira = {}, None
+    for _ in range(200):
+        async with _sem_dify:
+            r = await dify.mensagens(ag["chave"], username, cid, primeira, 100)
+        dados = r.get("data") or []
+        for m in dados:
+            todas[m["id"]] = m
+        if not r.get("has_more") or not dados:
+            break
+        primeira = min(dados, key=lambda m: m.get("created_at") or 0)["id"]
+    out = []
+    for m in sorted(todas.values(), key=lambda m: m.get("created_at") or 0):
+        out.append({"id": m["id"], "pergunta": m.get("query") or "", "resposta": m.get("answer") or "",
+                    "criado": m.get("created_at"), "avaliacao": (m.get("feedback") or {}).get("rating"),
+                    "fontes": _fontes({"retriever_resources": m.get("retriever_resources")})})
+    return out
+
+
+@app.get("/api/admin/conversas/{agente_id}/{username}/{cid}")
+async def admin_ver_conversa(agente_id: int, username: str, cid: str, admin: dict = Depends(exigir_admin)):
+    ag = _agente_ou_404(agente_id)
+    u = _usuario_param(username)
+    try:
+        mensagens = await _mensagens_completas(ag, u, _id(cid))
+    except dify.DifyErro as e:
+        raise _erro_dify(e)
+    db.auditar(admin["username"], "ver_conversa", u, f"{ag['nome']} · {cid}")
+    return {"mensagens": mensagens}
+
+
+class ConversaRef(BaseModel):
+    agente_id: int
+    username: str = Field(min_length=1, max_length=64)
+    conversation_id: str = Field(min_length=8, max_length=64)
+    titulo: str = Field(default="", max_length=200)
+    criado: float | None = None
+    atualizado: float | None = None
+
+
+class FiltroConversas(BaseModel):
+    usuario: str | None = Field(default=None, max_length=120)
+    agente: int | None = None
+    inicio: str | None = Field(default=None, max_length=10)
+    fim: str | None = Field(default=None, max_length=10)
+
+
+class ExportarIn(BaseModel):
+    # ou a lista escolhida na tela, ou "todas as conversas deste filtro"
+    itens: list[ConversaRef] | None = Field(default=None, max_length=5000)
+    filtro: FiltroConversas | None = None
+
+
+def _hora(ts: float | None) -> str:
+    return datetime.fromtimestamp(ts, FUSO).strftime("%d/%m/%Y %H:%M") if ts else "—"
+
+
+def _txt_conversa(meta: dict, mensagens: list[dict]) -> str:
+    linha, fina = "=" * 72, "-" * 72
+    nome_usuario = meta["usuario"] if meta["usuario"] == meta["username"] else f"{meta['usuario']} ({meta['username']})"
+    partes = [linha, f"Conversa: {meta['titulo']}", f"Usuário:  {nome_usuario}", f"Agente:   {meta['agente']}",
+              f"Período:  {_hora(meta.get('criado'))} até {_hora(meta.get('atualizado'))}",
+              f"Mensagens: {len(mensagens)}   ·   ID: {meta['conversation_id']}", linha, ""]
+    if not mensagens:
+        partes += ["(conversa sem mensagens)", ""]
+    for m in mensagens:
+        partes += [f"[{_hora(m['criado'])}] {meta['usuario']}:", m["pergunta"].strip(), "",
+                   f"[{_hora(m['criado'])}] {meta['agente']}:", m["resposta"].strip() or "(sem resposta)"]
+        if m["fontes"]:
+            partes.append("Fontes: " + "; ".join(f["documento"] for f in m["fontes"]))
+        if m["avaliacao"]:
+            partes.append("Avaliação: " + ("útil (👍)" if m["avaliacao"] == "like" else "ruim (👎)"))
+        partes += ["", fina, ""]
+    return "\r\n".join(partes) + "\r\n"
+
+
+@app.post("/api/admin/conversas/exportar")
+async def admin_exportar(dados: ExportarIn, admin: dict = Depends(exigir_admin)):
+    nomes = {u["username"]: u["nome"] or u["username"] for u in db.list_users()}
+    agentes = {a["id"]: a for a in db.list_agentes()}
+    if dados.itens is not None:
+        refs = []
+        for i in dados.itens:
+            a = agentes.get(i.agente_id)
+            if not a:
+                raise HTTPException(404, "Agente não encontrado.")
+            u = _usuario_param(i.username)
+            refs.append({"agente_id": a["id"], "agente": a["nome"], "username": u, "usuario": nomes.get(u, u),
+                         "conversation_id": _id(i.conversation_id), "titulo": i.titulo or "Conversa",
+                         "criado": i.criado, "atualizado": i.atualizado})
+        descricao = f"{len(refs)} selecionada(s)"
+    elif dados.filtro is not None:
+        f = dados.filtro
+        itens, _avisos = await _listar_conversas(_usuario_param(f.usuario), f.agente, f.inicio, f.fim)
+        refs = [{**c, "conversation_id": c["id"]} for c in itens]
+        descricao = "todas do filtro " + json.dumps(f.model_dump(exclude_none=True), ensure_ascii=False)
+    else:
+        raise HTTPException(400, "Informe as conversas ou o filtro.")
+    if not refs:
+        raise HTTPException(404, "Nenhuma conversa para exportar.")
+    if len(refs) > settings.EXPORTAR_MAX_CONVERSAS:
+        raise HTTPException(400, f"São {len(refs)} conversas; o limite por arquivo é {settings.EXPORTAR_MAX_CONVERSAS}. "
+                                 "Use um período menor ou filtre por usuário/agente.")
+
+    async def uma(ref):
+        try:
+            return _txt_conversa(ref, await _mensagens_completas(agentes[ref["agente_id"]], ref["username"],
+                                                                 ref["conversation_id"]))
+        except dify.DifyErro as e:
+            return _txt_conversa(ref, []) + f"(não foi possível ler esta conversa no Dify: {e.mensagem})\r\n"
+
+    blocos = await asyncio.gather(*[uma(r) for r in refs])
+    agora = datetime.now(FUSO)
+    cabecalho = (f"Exportação de conversas · {settings.APP_NAME}\r\nGerada em {agora:%d/%m/%Y %H:%M} por "
+                 f"{admin['username']} · {len(refs)} conversa(s)\r\n\r\n")
+    db.auditar(admin["username"], "exportar_conversas", "", f"{len(refs)} conversa(s): {descricao}")
+    nome = f"conversas-{agora:%Y%m%d-%H%M}.txt"
+    return Response("﻿" + cabecalho + "\r\n".join(blocos), media_type="text/plain; charset=utf-8",
+                    headers={"Content-Disposition": f'attachment; filename="{nome}"'})
 
 
 # ------------------------------------------------------------------ administração: agentes

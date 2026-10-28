@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=3">
+  <link rel="stylesheet" href="/assets/app.css?v=4">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -151,7 +151,8 @@
         <div class="abas" role="tablist">
           <button role="tab" class="aba ativa" data-aba="usuarios" aria-selected="true">Usuários</button>
           <button role="tab" class="aba" data-aba="agentes" aria-selected="false">Agentes</button>
-          <button role="tab" class="aba" data-aba="acessos" aria-selected="false">Registro de acessos</button>
+          <button role="tab" class="aba" data-aba="conversas" aria-selected="false">Conversas</button>
+          <button role="tab" class="aba" data-aba="acessos" aria-selected="false">Registros</button>
         </div>
         <div id="aba-usuarios">
           <div class="barra-aba">
@@ -173,7 +174,44 @@
           </div>
           <div id="lista-agentes" class="lista-usuarios"></div>
         </div>
+        <div id="aba-conversas" hidden>
+          <form class="filtros" id="filtros-conversas">
+            <div><label for="conv-usuario">Usuário</label><input id="conv-usuario" list="lista-logins" placeholder="Todos" autocomplete="off" spellcheck="false"></div>
+            <div><label for="conv-agente">Agente</label><select id="conv-agente"></select></div>
+            <div><label for="conv-inicio">De</label><input type="date" id="conv-inicio"></div>
+            <div><label for="conv-fim">Até</label><input type="date" id="conv-fim"></div>
+            <div class="filtros-acoes">
+              <button class="btn btn-primario" type="submit">Buscar</button>
+              <button class="btn btn-texto" type="reset">Limpar</button>
+            </div>
+          </form>
+          <div class="barra-conversas" id="barra-conversas" hidden>
+            <label class="check-todas"><input type="checkbox" id="conv-todas"><span id="conv-resumo"></span></label>
+            <button class="btn btn-texto" id="btn-exportar-sel" type="button" disabled>Exportar selecionadas</button>
+            <button class="btn btn-primario" id="btn-exportar-tudo" type="button">Exportar todas (TXT)</button>
+          </div>
+          <div id="conv-avisos"></div>
+          <div id="lista-conv-admin" class="lista-conv-admin"></div>
+        </div>
         <div id="aba-acessos" hidden>
+          <form class="filtros" id="filtros-registros">
+            <div><label for="reg-usuario">Usuário</label><input id="reg-usuario" list="lista-logins" placeholder="Todos" autocomplete="off" spellcheck="false"></div>
+            <div><label for="reg-agente">Agente</label><select id="reg-agente"></select></div>
+            <div><label for="reg-tipo">Tipo</label>
+              <select id="reg-tipo">
+                <option value="todos">Logins e uso dos agentes</option>
+                <option value="acessos">Só logins</option>
+                <option value="uso">Só uso dos agentes</option>
+              </select>
+            </div>
+            <div><label for="reg-inicio">De</label><input type="date" id="reg-inicio"></div>
+            <div><label for="reg-fim">Até</label><input type="date" id="reg-fim"></div>
+            <div class="filtros-acoes">
+              <button class="btn btn-primario" type="submit">Filtrar</button>
+              <button class="btn btn-texto" type="reset">Limpar</button>
+            </div>
+          </form>
+          <p class="muted resumo" id="reg-resumo"></p>
           <div id="lista-acessos" class="lista-acessos"></div>
         </div>
       </main>
@@ -253,10 +291,28 @@
     </form>
   </dialog>
 
+  <!-- modal: ler uma conversa (administração) -->
+  <dialog id="dlg-conversa" class="dialogo dialogo-largo">
+    <div class="dialogo-corpo">
+      <div class="dialogo-cab">
+        <div class="conv-cab-texto"><h3 id="conv-titulo"></h3><p class="muted" id="conv-sub"></p></div>
+        <button class="btn-icone" id="conv-fechar" type="button" aria-label="Fechar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5l13 13-1 1L5 6zm12 0l1 1L6 19l-1-1z"/></svg>
+        </button>
+      </div>
+      <div class="conv-mensagens" id="conv-mensagens"></div>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" id="conv-fechar2" type="button">Fechar</button>
+        <button class="btn btn-primario" id="conv-exportar" type="button">Exportar TXT</button>
+      </div>
+    </div>
+  </dialog>
+  <datalist id="lista-logins"></datalist>
+
   <div id="toast" class="toast" role="status" hidden></div>
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=3" type="module"></script>
+  <script src="/assets/app.js?v=4" type="module"></script>
 </body>
 </html>

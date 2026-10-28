@@ -398,7 +398,43 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 .check-texto small { color: var(--texto-suave); font-size: 12.5px; }
 .dialogo textarea { resize: vertical; }
 .lista-acessos { display: grid; gap: 6px; font-size: 13.5px; }
-.acesso { display: grid; grid-template-columns: 150px minmax(0, 1fr) 130px 120px; gap: 10px; padding: 8px 12px; background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px; }
+.acesso {
+  display: grid; grid-template-columns: 130px minmax(0, .9fr) 170px minmax(0, 1fr) minmax(0, 1fr) 110px; gap: 10px; align-items: center;
+  padding: 8px 12px; background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px;
+}
+.acesso > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.acesso .reg-ver { padding: 2px 6px; font-size: 13px; justify-self: end; grid-column: 6; }
+/* ---------- filtros (Conversas e Registros) ---------- */
+.filtros {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 12px; padding: 12px; margin-bottom: 12px;
+}
+.filtros label { margin: 0 0 4px; }
+.filtros input, .filtros select { padding: 8px 10px; font-size: 14px; }
+.filtros-acoes { display: flex; gap: 6px; }
+.filtros-acoes .btn { padding: 9px 14px; }
+.resumo { font-size: 13px; margin: 0 0 8px; }
+.barra-conversas { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 8px; }
+.check-todas { display: inline-flex; align-items: center; gap: 8px; margin: 0 auto 0 4px; font-size: 14px; color: var(--texto); font-weight: 600; cursor: pointer; }
+.check-todas input, .conv-linha input[type=checkbox] { width: 18px; height: 18px; padding: 0; accent-color: var(--flex-teal-700); flex: none; }
+.barra-conversas .btn { padding: 9px 14px; }
+#conv-avisos .msg-erro { margin-bottom: 8px; }
+.lista-conv-admin { display: grid; gap: 6px; }
+.conv-linha {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr) 130px auto; gap: 12px; align-items: center;
+  background: var(--superficie); border: 1px solid var(--borda); border-radius: 10px; padding: 8px 12px;
+}
+.conv-linha:has(input:checked) { border-color: var(--flex-verde); background: rgba(134, 193, 63, .08); }
+.conv-linha .nome { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-linha .sub { font-size: 12.5px; color: var(--texto-suave); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.conv-linha .btn { padding: 6px 10px; }
+.dialogo-largo { width: min(920px, calc(100vw - 24px)); }
+.conv-cab-texto { min-width: 0; }
+.conv-cab-texto p { margin: 2px 0 0; font-size: 13px; }
+.conv-mensagens { margin-top: 12px; max-height: 62vh; overflow-y: auto; background: var(--bg); border-radius: 12px; padding: 14px; }
+.conv-mensagens .msg-user { flex-direction: column; align-items: flex-end; }
+.conv-hora { font-size: 11.5px; color: var(--texto-suave); margin-bottom: 2px; }
+.conv-avaliacao { font-size: 13px; margin: 6px 0 0; color: var(--texto-suave); }
 .acesso .ok { color: var(--flex-verde-escuro); font-weight: 700; }
 .acesso .falha { color: var(--erro); font-weight: 700; }
 
@@ -450,7 +486,14 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
   .agente-linha .ed { grid-area: ed; }
   .agente-linha .rem { grid-area: rem; }
   .barra-aba { flex-direction: column; align-items: stretch; }
-  .acesso { grid-template-columns: 1fr 1fr; }
+  .acesso { grid-template-columns: 1fr 1fr; row-gap: 2px; }
+  .acesso .reg-ver { grid-column: 2; }
+  .conv-linha { grid-template-columns: 18px minmax(0, 1fr) auto; }
+  .conv-linha .quando { grid-column: 2; grid-row: 2; }
+  .conv-linha .btn { grid-row: 1 / span 2; grid-column: 3; }
+  .barra-conversas .btn { flex: 1; }
+  .check-todas { width: 100%; }
+  .conv-mensagens { max-height: 58vh; padding: 10px; }
   .admin { padding: 16px 12px calc(16px + var(--safe-bottom)); }
   .admin-cab .btn { width: 100%; }
   .msg-user .bolha { max-width: 90%; }

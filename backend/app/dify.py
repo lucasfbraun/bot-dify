@@ -4,6 +4,7 @@ As chaves ficam só no servidor; o navegador nunca as vê.
 Cada pessoa é identificada no Dify como "ad:<login>", então cada um vê só as próprias conversas.
 No Dify as conversas pertencem ao app, então cada agente tem o seu próprio histórico.
 """
+import asyncio
 import json
 
 import httpx
@@ -21,6 +22,24 @@ def ident(username: str) -> str:
 def _client(chave: str, timeout: float | httpx.Timeout | None = 30) -> httpx.AsyncClient:
     return httpx.AsyncClient(base_url=settings.DIFY_API_URL, headers={"Authorization": f"Bearer {chave}"},
                              timeout=timeout, verify=settings.DIFY_VERIFY_TLS)
+
+
+_compartilhado: dict = {"loop": None, "cliente": None}
+
+
+def _cliente_compartilhado() -> httpx.AsyncClient:
+    """Um cliente só, com conexões reaproveitadas (abrir TLS a cada chamada custa caro ao varrer
+    centenas de conversas). Recriado se o event loop mudar (acontece nos testes)."""
+    loop = asyncio.get_running_loop()
+    if _compartilhado["loop"] is not loop or _compartilhado["cliente"] is None:
+        _compartilhado.update(loop=loop, cliente=httpx.AsyncClient(
+            base_url=settings.DIFY_API_URL, timeout=30, verify=settings.DIFY_VERIFY_TLS,
+            limits=httpx.Limits(max_connections=20, max_keepalive_connections=10)))
+    return _compartilhado["cliente"]
+
+
+def _auth(chave: str) -> dict:
+    return {"Authorization": f"Bearer {chave}"}
 
 
 class DifyErro(Exception):
@@ -43,16 +62,14 @@ def _erro(r: httpx.Response) -> DifyErro:
 
 
 async def _get(chave: str, path: str, params: dict) -> dict:
-    async with _client(chave) as c:
-        r = await c.get(path, params=params)
+    r = await _cliente_compartilhado().get(path, params=params, headers=_auth(chave))
     if r.status_code >= 400:
         raise _erro(r)
     return r.json()
 
 
 async def _send(chave: str, method: str, path: str, body: dict) -> dict:
-    async with _client(chave) as c:
-        r = await c.request(method, path, json=body)
+    r = await _cliente_compartilhado().request(method, path, json=body, headers=_auth(chave))
     if r.status_code >= 400:
         raise _erro(r)
     return r.json() if r.content else {}
