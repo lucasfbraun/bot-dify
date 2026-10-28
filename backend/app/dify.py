@@ -24,19 +24,22 @@ def _client(chave: str, timeout: float | httpx.Timeout | None = 30) -> httpx.Asy
 
 
 class DifyErro(Exception):
-    def __init__(self, status: int, mensagem: str):
+    def __init__(self, status: int, mensagem: str, codigo: str = ""):
         super().__init__(mensagem)
         self.status = status
         self.mensagem = mensagem
+        self.codigo = codigo  # ex.: speech_to_text_disabled
 
 
 def _erro(r: httpx.Response) -> DifyErro:
+    codigo = ""
     try:
         corpo = r.json()
-        msg = corpo.get("message") or corpo.get("code") or r.text
+        codigo = str(corpo.get("code") or "")
+        msg = corpo.get("message") or codigo or r.text
     except ValueError:
         msg = r.text
-    return DifyErro(r.status_code, str(msg)[:300])
+    return DifyErro(r.status_code, str(msg)[:300], codigo)
 
 
 async def _get(chave: str, path: str, params: dict) -> dict:
@@ -105,6 +108,15 @@ async def feedback(chave: str, username: str, message_id: str, rating: str | Non
 
 async def parar(chave: str, username: str, task_id: str) -> dict:
     return await _send(chave, "POST", f"/chat-messages/{task_id}/stop", {"user": ident(username)})
+
+
+async def transcrever(chave: str, username: str, dados: bytes, nome: str, mime: str) -> dict:
+    """Voz para texto com o modelo configurado no app do Dify (recurso "Speech to Text" ligado)."""
+    async with _client(chave, httpx.Timeout(120, connect=15)) as c:
+        r = await c.post("/audio-to-text", files={"file": (nome, dados, mime)}, data={"user": ident(username)})
+    if r.status_code >= 400:
+        raise _erro(r)
+    return r.json()
 
 
 async def stream_chat(chave: str, username: str, pergunta: str, conversation_id: str | None):

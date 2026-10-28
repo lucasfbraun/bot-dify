@@ -3,9 +3,11 @@
 Como no Dify de verdade, as conversas pertencem ao app: a chave de um app não enxerga as conversas de outro.
 """
 import asyncio
+import io
 import json
 import time
 import uuid
+import wave
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -18,7 +20,8 @@ CHAVE_WORKFLOW = "app-Fluxo00000000000000000"
 
 APPS = {
     CHAVE_PU: {"name": "Agente Técnico PU(qlik)", "description": "Especialista em poliuretano com acesso ao Qlik.",
-               "mode": "agent-chat", "icon": "🧪", "icon_background": "#E4FBCC", "ferramentas": True},
+               "mode": "agent-chat", "icon": "🧪", "icon_background": "#E4FBCC", "ferramentas": True,
+               "voz_para_texto": True},
     CHAVE_COMERCIAL: {"name": "Agente Comercial", "description": "Tira dúvidas de catálogo, sem acesso ao ERP.",
                       "mode": "advanced-chat", "icon": "💼", "icon_background": "#D1E9FF", "ferramentas": False,
                       "sugestoes": ["Quais espumas temos para colchões?"]},
@@ -27,6 +30,7 @@ APPS = {
 }
 CONVERSAS: dict[str, dict] = {}
 MENSAGENS: dict[str, list] = {}
+ULTIMO_AUDIO: dict = {}
 
 RESPOSTA_PU = """## FLEXX AG 2032 — visão geral
 
@@ -90,7 +94,38 @@ async def parametros(req: Request):
     if not a:
         return _negado()
     return {"opening_statement": "", "suggested_questions": a.get("sugestoes", []),
-            "suggested_questions_after_answer": {"enabled": False}}
+            "suggested_questions_after_answer": {"enabled": False},
+            "speech_to_text": {"enabled": a.get("voz_para_texto", False)}}
+
+
+@app.post("/v1/audio-to-text")
+async def audio_para_texto(req: Request):
+    """Imita o Dify: só aceita os tipos dele e só com "Voz para texto" ligado. Lê o WAV para o teste
+    conferir a conversão feita no navegador (taxa, canais e duração)."""
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    if not a.get("voz_para_texto"):
+        return JSONResponse({"code": "speech_to_text_disabled", "message": "Speech to text is disabled.", "status": 400}, 400)
+    form = await req.form()
+    arquivo = form.get("file")
+    if not form.get("user") or arquivo is None:
+        return JSONResponse({"code": "no_audio_uploaded", "message": "Please upload your audio."}, 400)
+    if arquivo.content_type not in ("audio/wav", "audio/mp3", "audio/m4a", "audio/mpga", "audio/amr"):
+        return JSONResponse({"code": "unsupported_audio_type", "message": "Audio type not allowed."}, 415)
+    dados = await arquivo.read()
+    ULTIMO_AUDIO.update(tamanho=len(dados), tipo=arquivo.content_type, nome=arquivo.filename, user=form.get("user"))
+    if arquivo.content_type != "audio/wav":
+        return {"text": "Áudio recebido."}
+    try:
+        with wave.open(io.BytesIO(dados)) as w:
+            taxa, canais, quadros = w.getframerate(), w.getnchannels(), w.getnframes()
+            amostras = w.readframes(quadros)
+    except (wave.Error, EOFError):
+        return JSONResponse({"code": "unsupported_audio_type", "message": "Audio type not allowed."}, 415)
+    if not any(amostras):  # silêncio total: o modelo não reconhece fala
+        return {"text": ""}
+    return {"text": f"Qual o custo do FLEXX AG 2032? [áudio {quadros / taxa:.1f} s, {taxa} Hz, {canais} canal]"}
 
 
 @app.get("/v1/conversations")

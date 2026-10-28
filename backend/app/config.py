@@ -35,6 +35,9 @@ class Settings:
     DIFY_API_KEY = os.getenv("DIFY_API_KEY", "")
     DIFY_TIMEOUT = int(os.getenv("DIFY_TIMEOUT", "600"))
     DIFY_VERIFY_TLS = _bool("DIFY_VERIFY_TLS", True)
+    # Tamanho máximo do áudio enviado para transcrição (o Dify aceita até 30 MB).
+    # O navegador grava em WAV 16 kHz mono: ~1,9 MB por minuto, e limita a gravação a 5 min (~9,6 MB).
+    AUDIO_MAX_MB = int(os.getenv("AUDIO_MAX_MB", "12"))
 
     # Proteção de login
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))

@@ -3,9 +3,13 @@
     pip install playwright        (usa o Chrome instalado; ou rode "playwright install chromium")
     python tests/test_ui.py       (prints em tests/prints/)
 """
+import math
 import os
 import re
+import struct
 import sys
+import tempfile
+import wave
 
 import httpx
 from playwright.sync_api import expect, sync_playwright
@@ -52,12 +56,26 @@ def print_(page, nome):
     page.screenshot(path=os.path.join(PRINTS, f"{nome}.png"), full_page=False)
 
 
+def wav_de_teste():
+    """Tom de 3 s (48 kHz estéreo, como um microfone comum) que o Chrome toca no lugar do microfone."""
+    caminho = os.path.join(tempfile.mkdtemp(prefix="mic-falso-"), "voz.wav")
+    with wave.open(caminho, "wb") as w:
+        w.setnchannels(2)
+        w.setsampwidth(2)
+        w.setframerate(48000)
+        quadro = [struct.pack("<hh", v, v) for v in (int(9000 * math.sin(2 * math.pi * 440 * i / 48000)) for i in range(48000 * 3))]
+        w.writeframes(b"".join(quadro))
+    return caminho
+
+
 with sync_playwright() as p:
-    nav = p.chromium.launch(channel="chrome", headless=True)
+    nav = p.chromium.launch(channel="chrome", headless=True, args=[
+        "--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream",
+        f"--use-file-for-fake-audio-capture={wav_de_teste()}"])
     erros_console = []
 
     def novo(viewport=None):
-        ctx = nav.new_context(viewport=viewport or {"width": 1280, "height": 800}, locale="pt-BR")
+        ctx = nav.new_context(viewport=viewport or {"width": 1280, "height": 800}, locale="pt-BR", permissions=["microphone"])
         pg = ctx.new_page()
         pg.on("console", lambda m: m.type == "error" and erros_console.append(f"{m.text} @ {pg.url}"))
         pg.on("pageerror", lambda e: erros_console.append(f"pageerror: {e} | {(e.stack or '')[:400]}"))
@@ -158,6 +176,46 @@ with sync_playwright() as p:
     adm.select_option("#sel-agente", label="PU completo")
     checar("chat usa o novo nome", lambda: expect(adm.locator("#topo-titulo")).to_have_text("PU completo"))
     checar("sugestões novas", lambda: expect(adm.locator(".sugestao")).to_have_text(["CustosCusto do FLEXX TH", "Pergunta sem categoria"]))
+
+    # ------------------------------------------------------------------ áudio
+    print("== admin: pergunta por áudio (microfone simulado)")
+    checar("microfone aparece no agente com voz para texto", lambda: expect(adm.locator("#btn-microfone")).to_be_visible())
+    adm.select_option("#sel-agente", label="Agente Comercial")
+    checar("microfone some no agente sem voz para texto", lambda: expect(adm.locator("#btn-microfone")).to_be_hidden())
+    adm.select_option("#sel-agente", label="PU completo")
+    adm.click("#btn-microfone")
+    checar("barra de gravação aparece", lambda: expect(adm.locator("#gravando")).to_be_visible())
+    checar("caixa de texto some durante a gravação", lambda: expect(adm.locator("#pergunta")).to_be_hidden())
+    checar("cronômetro anda", lambda: expect(adm.locator("#grav-tempo")).to_have_text("0:01"))
+    adm.wait_for_timeout(1200)
+    print_(adm, "12-gravando")
+    adm.click("#btn-concluir")
+    checar("texto transcrito vai para a caixa (WAV 16 kHz mono, ~2 s)", lambda: expect(adm.locator("#pergunta")).to_have_value(
+        re.compile(r"^Qual o custo do FLEXX AG 2032\? \[áudio (1\.[89]|2\.\d) s, 16000 Hz, 1 canal\]$"), timeout=15000))
+    checar("barra de gravação fecha", lambda: expect(adm.locator("#gravando")).to_be_hidden())
+    checar("enviar liberado para revisar e mandar", lambda: expect(adm.locator("#btn-enviar")).to_be_enabled())
+    print_(adm, "13-transcrito")
+    adm.click("#btn-enviar")
+    checar("pergunta transcrita é enviada", lambda: expect(adm.locator(".msg-user .bolha").last).to_contain_text("Qual o custo do FLEXX AG 2032?"))
+    checar("agente responde", lambda: expect(adm.locator("#btn-parar")).to_be_hidden(timeout=15000))
+
+    adm.fill("#pergunta", "")
+    adm.click("#btn-microfone")
+    adm.wait_for_timeout(1000)
+    adm.keyboard.press("Escape")
+    checar("Esc descarta a gravação", lambda: expect(adm.locator("#gravando")).to_be_hidden())
+    adm.wait_for_timeout(1500)
+    checar("nada é transcrito depois de descartar", lambda: expect(adm.locator("#pergunta")).to_have_value(""))
+
+    adm.click("#btn-microfone")
+    adm.click("#btn-concluir")
+    checar("áudio curto demais avisa", lambda: expect(adm.locator("#toast")).to_contain_text("curto demais"))
+
+    adm.click("#btn-microfone")
+    adm.wait_for_timeout(800)
+    adm.select_option("#sel-agente", label="Agente Comercial")
+    checar("trocar de agente descarta a gravação", lambda: expect(adm.locator("#gravando")).to_be_hidden())
+    checar("e a caixa de texto volta", lambda: expect(adm.locator("#pergunta")).to_be_visible())
 
     # ------------------------------------------------------------------ maria
     print("== maria: só o comercial")

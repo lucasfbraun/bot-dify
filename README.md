@@ -8,6 +8,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Login com o usuário e a senha da rede** (AD `flexivel.local`). Aceita `nome.sobrenome`, `FLEXIVEL\nome.sobrenome` ou `nome.sobrenome@flexivel.local`. Só entra quem está cadastrado.
 - **Registro de acessos**: logins ok, senha errada, pessoa sem liberação, conta desabilitada no AD e bloqueio por tentativas.
 - **Chat com streaming**: seletor de agente na barra lateral (e atalhos na tela inicial), histórico separado por agente, status do que o agente está fazendo (consultando o Qlik, buscando certificados etc.), renomear/apagar, copiar e avaliar (👍/👎 vão para os registros do Dify).
+- **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -51,6 +52,34 @@ Só servem apps de **conversa**: *Chatbot*, *Agente* e *Chatflow*. Apps do tipo 
 | Acesso tirado com a tela aberta | Na próxima ação, a pessoa vê o aviso e a tela passa para os agentes que sobraram. |
 
 Cada pessoa é identificada no Dify como `ad:<login>`. As conversas de cada agente ficam no app correspondente do Dify, então cada agente tem o próprio histórico e ninguém vê conversa de outra pessoa.
+
+## Perguntas por áudio
+
+O botão de microfone aparece ao lado do botão de enviar **só nos agentes que aceitam áudio**.
+
+### Como usar
+
+1. Toque no microfone. Na primeira vez, o navegador pede permissão para usar o microfone.
+2. Fale a pergunta. O cronômetro mostra o tempo gravado; o limite é de 5 minutos.
+3. Toque em **✓** para terminar, ou na lixeira (ou Esc) para descartar.
+4. O texto transcrito aparece na caixa. Confira, principalmente códigos de produto e números, corrija se precisar e envie.
+
+O texto vai para a caixa em vez de ser enviado direto porque a transcrição pode errar nomes técnicos (por exemplo, "FLEXX AG 2032"), e uma pergunta errada para o agente gasta tempo e consulta à toa.
+
+### Como ligar o áudio num agente (no Dify)
+
+1. **Modelo de voz para texto no workspace**: em **Configurações → Provedor de modelos**, configure um provedor com modelo *Speech to Text* (por exemplo, OpenAI `whisper-1`) e defina-o como padrão de **Voz para texto** em **Modelos do sistema**.
+2. **Recurso no app**: abra o agente no Dify → **Recursos** (ou **Funcionalidades**) → ligue **Voz para texto** (*Speech to Text*) → **Publicar**.
+3. Em até 5 minutos, o botão de microfone aparece para quem tem acesso ao agente. Para ver na hora, recarregue a página.
+
+Agentes sem o recurso ligado não mostram o microfone. Se o modelo de voz para texto não estiver configurado ou estiver sem cota, a pessoa vê uma mensagem explicando o problema.
+
+### Como funciona por dentro
+
+- O navegador grava com o formato nativo dele (webm no Chrome/Edge/Firefox, mp4 no Safari) e **converte para WAV 16 kHz mono** antes de enviar, porque o Dify não aceita webm. Isso dá cerca de 1,9 MB por minuto.
+- O servidor confere se a pessoa tem acesso ao agente e se o arquivo está dentro do limite (`AUDIO_MAX_MB`, padrão 12 MB), repassa para `/v1/audio-to-text` do Dify com a chave do agente e devolve só o texto. **O áudio não fica guardado** em lugar nenhum desta aplicação.
+- A gravação só funciona com **HTTPS** (exigência dos navegadores para usar o microfone).
+- O nginx precisa aceitar o tamanho do áudio: `client_max_body_size 12m` (já está em `deploy/nginx-agente.conf`). Com o limite antigo de 1 MB, áudios com mais de uns 30 segundos são recusados e a pessoa vê *"O servidor recusou o áudio por tamanho"*.
 
 ## Deploy no servidor do Dify (10.100.100.13)
 
@@ -97,6 +126,15 @@ cd /opt/agente-pu-web && git pull && docker compose up -d --build
 
 O `--build` é obrigatório: o frontend é copiado para dentro da imagem, então só o `git pull` não muda o que o navegador recebe. O cadastro de usuários, os agentes e o registro de acessos ficam no volume `agente-pu-dados` e não se perdem ao atualizar. Não use `docker compose down -v`, porque o `-v` apaga esse volume.
 
+#### Atualizando para a versão com áudio
+
+Além do `git pull` e do `docker compose up -d --build`, aumente o tamanho máximo de upload no nginx que faz o HTTPS:
+
+- **Opção A, nginx no host**: no arquivo do site (por exemplo, `/etc/nginx/conf.d/nginx-agente.conf`), troque `client_max_body_size 1m;` por `client_max_body_size 12m;` e rode `sudo nginx -t && sudo systemctl reload nginx`.
+- **Opção B, nginx do Dify**: faça a mesma troca no bloco `server` do agente em `dify/docker/nginx/conf.d/` e reinicie o nginx do Dify (`docker compose restart nginx` na pasta `dify/docker`).
+
+Depois, ligue **Voz para texto** nos agentes que devem aceitar áudio (veja [Perguntas por áudio](#perguntas-por-áudio)).
+
 #### Atualizando da versão de agente único
 
 Na primeira subida desta versão, a migração faz o seguinte, sem precisar de nenhuma ação manual:
@@ -114,15 +152,15 @@ pip install -r backend/requirements.txt
 python tests/dev_server.py            # app em http://127.0.0.1:8088 (AD e Dify falsos)
 python tests/test_api.py              # em outro terminal: teste ponta a ponta da API
 python tests/test_migracao.py         # não precisa do servidor: atualização de um banco da versão antiga
-pip install playwright && python tests/test_ui.py   # interface no Chrome (prints em tests/prints/)
+pip install playwright && python tests/test_ui.py   # interface no Chrome, com microfone simulado (prints em tests/prints/)
 ```
 
 `test_api.py` e `test_ui.py` esperam um servidor recém-iniciado: reinicie o `dev_server.py` entre um e outro.
 
 O Dify falso tem três apps:
 
-- **Agente Técnico PU(qlik)**: agente com ferramentas. A chave dele é a `DIFY_API_KEY` padrão, então vira o primeiro agente na subida.
-- **Agente Comercial**: chatflow sem ferramentas, com a chave `app-Comercial0000000000000`.
+- **Agente Técnico PU(qlik)**: agente com ferramentas e voz para texto ligada. A chave dele é a `DIFY_API_KEY` padrão, então vira o primeiro agente na subida. A "transcrição" falsa devolve a duração e o formato do WAV recebido, o que permite conferir a conversão feita no navegador.
+- **Agente Comercial**: chatflow sem ferramentas e sem voz para texto, com a chave `app-Comercial0000000000000`.
 - **Fluxo de relatórios**: workflow que deve ser recusado no cadastro, com a chave `app-Fluxo00000000000000000`.
 
 Usuários do AD falso, todos com a senha `Teste@123`:

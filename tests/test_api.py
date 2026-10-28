@@ -1,7 +1,11 @@
 """Teste ponta a ponta da API (com tests/dev_server.py rodando num DATA_DIR novo)."""
+import io
 import json
+import math
 import os
+import struct
 import sys
+import wave
 
 import httpx
 
@@ -145,6 +149,43 @@ info_pu = adm.get(f"/api/agentes/{PU}/info").json()
 ok(info_pu["sugestoes"][0] == {"cat": "Produto", "txt": "Tudo sobre o FLEXX AG 2032"}, "sem sugestões no Dify, usa as do agente")
 ok(adm.get(f"/api/agentes/{COM}/conversas").json()["itens"] == [], "admin não vê conversa da maria")
 ok(adm.get(f"/api/agentes/{COM}/conversas/{cid_maria}/mensagens").status_code == 404, "admin não lê mensagens da maria")
+
+# ------------------------------------------------------------------ áudio
+secao("perguntas por áudio (voz para texto)")
+
+
+def wav(segundos=1.0, taxa=16000, silencio=False):
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(taxa)
+        n = int(segundos * taxa)
+        w.writeframes(b"\x00\x00" * n if silencio else
+                      b"".join(struct.pack("<h", int(8000 * math.sin(i / 8))) for i in range(n)))
+    return buf.getvalue()
+
+
+AUDIO = {"Content-Type": "audio/wav"}
+ok(adm.get(f"/api/agentes/{PU}/info").json()["audio"] is True, "PU com voz para texto: info.audio = true")
+ok(maria.get(f"/api/agentes/{COM}/info").json()["audio"] is False, "comercial sem voz para texto: info.audio = false")
+r = adm.post(f"/api/agentes/{PU}/audio", content=wav(2.0), headers=AUDIO)
+ok(r.status_code == 200 and r.json()["texto"].startswith("Qual o custo") and "2.0 s, 16000 Hz, 1 canal" in r.json()["texto"],
+   f"transcreve o WAV ({r.json()})")
+r = maria.post(f"/api/agentes/{COM}/audio", content=wav(), headers=AUDIO)
+ok(r.status_code == 400 and "Voz para texto" in r.json()["detail"], "agente sem voz para texto -> 400 explicando o que ligar")
+ok(maria.post(f"/api/agentes/{PU}/audio", content=wav(), headers=AUDIO).status_code == 403, "agente não liberado -> 403")
+ok(adm.post(f"/api/agentes/{PU}/audio", content=wav(), headers={"Content-Type": "audio/webm"}).status_code == 415,
+   "webm (que o Dify recusa) -> 415")
+ok(adm.post(f"/api/agentes/{PU}/audio", content=b"x" * 500, headers=AUDIO).status_code == 400, "áudio curto demais -> 400")
+r = adm.post(f"/api/agentes/{PU}/audio", content=wav(1.0, silencio=True), headers=AUDIO)
+ok(r.status_code == 422 and "entender" in r.json()["detail"], "silêncio (sem texto) -> 422")
+r = adm.post(f"/api/agentes/{PU}/audio", content=b"\0" * (13 * 1024 * 1024), headers=AUDIO)
+ok(r.status_code == 413 and "MB" in r.json()["detail"], "acima de AUDIO_MAX_MB -> 413")
+ok(httpx.post(f"{B}/api/agentes/{PU}/audio", content=wav(), headers=AUDIO, cookies=adm.cookies).status_code == 403,
+   "envio de áudio sem cabeçalho CSRF -> 403")
+ok(anon.post(f"/api/agentes/{PU}/audio", content=wav(), headers={**AUDIO, **H}).status_code == 401, "sem sessão -> 401")
+ok("microphone=(self)" in anon.get("/").headers["permissions-policy"], "Permissions-Policy libera o microfone só para o site")
 
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")

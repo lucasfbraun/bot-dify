@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=2">
+  <link rel="stylesheet" href="/assets/app.css?v=3">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -113,8 +113,22 @@
           </div>
         </div>
         <form class="compositor" id="form-chat">
-          <div class="compositor-caixa">
+          <div class="compositor-caixa" id="compositor-caixa">
             <textarea id="pergunta" rows="1" placeholder="Pergunte ao Agente Técnico PU…" enterkeyhint="send" maxlength="8000"></textarea>
+            <div class="gravando" id="gravando" hidden>
+              <span class="grav-ponto" aria-hidden="true"></span>
+              <span class="grav-tempo" id="grav-tempo" role="timer" aria-live="off">0:00</span>
+              <span class="grav-texto" id="grav-texto">Gravando… fale a sua pergunta</span>
+              <button class="btn-icone grav-cancelar" id="grav-cancelar" type="button" aria-label="Descartar áudio" title="Descartar (Esc)">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 1h4v2H4V4h4zM5 7h14l-1 14H6zm4 2v10h2V9zm4 0v10h2V9z"/></svg>
+              </button>
+            </div>
+            <button class="btn-microfone" id="btn-microfone" type="button" aria-label="Gravar pergunta por áudio" title="Gravar áudio" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 14a3 3 0 003-3V5a3 3 0 10-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V21h2v-3.1A7 7 0 0019 11z"/></svg>
+            </button>
+            <button class="btn-concluir" id="btn-concluir" type="button" aria-label="Terminar e transcrever" title="Terminar e transcrever" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 16.2l-3.5-3.5L4 14.2l5 5 11-11-1.5-1.5z"/></svg>
+            </button>
             <button class="btn-enviar" id="btn-enviar" type="submit" aria-label="Enviar" title="Enviar">
               <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 20l18-8L3 4v6l12 2-12 2z"/></svg>
             </button>
@@ -243,6 +257,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=2" type="module"></script>
+  <script src="/assets/app.js?v=3" type="module"></script>
 </body>
 </html>

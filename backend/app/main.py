@@ -82,7 +82,8 @@ async def cabecalhos_seguranca(request: Request, call_next):
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
     resp.headers.setdefault("X-Frame-Options", "DENY")
-    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    # microfone só para o próprio site (gravação de perguntas por áudio)
+    resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
     resp.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
@@ -252,11 +253,13 @@ async def agente_info(ag: dict = Depends(agente_permitido)):
                 "abertura": p.get("opening_statement") or "",
                 "sugestoes": [{"cat": "", "txt": str(t)} for t in (p.get("suggested_questions") or []) if t],
                 "sugestoes_apos_resposta": bool((p.get("suggested_questions_after_answer") or {}).get("enabled")),
+                # recurso "Voz para texto" ligado no app: mostra o botão de microfone
+                "audio": bool((p.get("speech_to_text") or {}).get("enabled")),
             }}
             _cache_params[ag["id"]] = cache
         except Exception as e:  # noqa: BLE001
             log.warning("parâmetros do Dify indisponíveis (agente %s): %s", ag["id"], e)
-            cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False}}
+            cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False, "audio": False}}
     v = dict(cache["v"])
     # perguntas sugeridas do Dify têm prioridade; sem elas, usa as cadastradas no agente
     if not v["sugestoes"]:
@@ -354,6 +357,64 @@ async def parar(task_id: str, ag: dict = Depends(agente_permitido), user: dict =
 class ChatIn(BaseModel):
     pergunta: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
+
+
+# formatos que o Dify transcreve (o frontend sempre manda WAV; os outros servem para clientes futuros)
+TIPOS_AUDIO = {"audio/wav": ("wav", "audio/wav"), "audio/x-wav": ("wav", "audio/wav"), "audio/wave": ("wav", "audio/wav"),
+               "audio/mpeg": ("mp3", "audio/mp3"), "audio/mp3": ("mp3", "audio/mp3"),
+               "audio/m4a": ("m4a", "audio/m4a"), "audio/x-m4a": ("m4a", "audio/m4a"), "audio/mp4": ("m4a", "audio/m4a")}
+_ERROS_AUDIO = {
+    "speech_to_text_disabled": (400, "Este agente não está configurado para receber áudio. No Dify, ligue o recurso "
+                                     "\"Voz para texto\" (Speech to Text) do app."),
+    "provider_not_support_speech_to_text": (502, "O modelo de voz para texto do Dify não está disponível. "
+                                                 "Configure um em Configurações > Provedor de modelos."),
+    "provider_not_initialize": (502, "O modelo de voz para texto do Dify não está configurado. "
+                                     "Configure um em Configurações > Provedor de modelos."),
+    "provider_quota_exceeded": (502, "A cota do modelo de voz para texto acabou. Avise a TI."),
+    "audio_too_large": (413, "O áudio ficou grande demais. Grave um trecho menor."),
+    "unsupported_audio_type": (415, "Formato de áudio não aceito pelo Dify."),
+}
+
+
+@app.post("/api/agentes/{aid}/audio")
+async def transcrever_audio(request: Request, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
+    """Recebe o áudio gravado no navegador (corpo bruto) e devolve o texto transcrito pelo Dify.
+    O áudio não é guardado: vai direto para o Dify e é descartado."""
+    tipo = request.headers.get("content-type", "").split(";")[0].strip().lower()
+    if tipo not in TIPOS_AUDIO:
+        raise HTTPException(415, "Formato de áudio não suportado.")
+    limite = settings.AUDIO_MAX_MB * 1024 * 1024
+    muito_grande = HTTPException(413, f"O áudio passou de {settings.AUDIO_MAX_MB} MB. Grave um trecho menor.")
+    try:
+        declarado = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declarado = 0
+    if declarado > limite:
+        raise muito_grande
+    dados = bytearray()
+    async for parte in request.stream():
+        dados += parte
+        if len(dados) > limite:
+            raise muito_grande
+    if len(dados) < 1000:
+        raise HTTPException(400, "Áudio vazio ou curto demais.")
+
+    ext, mime = TIPOS_AUDIO[tipo]
+    try:
+        r = await dify.transcrever(ag["chave"], user["username"], bytes(dados), f"pergunta.{ext}", mime)
+    except dify.DifyErro as e:
+        log.warning("Dify audio-to-text %s %s: %s", e.status, e.codigo, e.mensagem)
+        if e.codigo in _ERROS_AUDIO:
+            status, msg = _ERROS_AUDIO[e.codigo]
+            raise HTTPException(status, msg)
+        raise _erro_dify(e)
+    except httpx.HTTPError as e:
+        log.warning("Dify inacessível na transcrição: %s", e)
+        raise HTTPException(502, "Não foi possível falar com o Dify. Tente de novo em instantes.")
+    texto = str(r.get("text") or "").strip()
+    if not texto:
+        raise HTTPException(422, "Não consegui entender o áudio. Fale mais perto do microfone e tente de novo.")
+    return {"texto": texto}
 
 
 # Nomes amigáveis do que o agente está fazendo (ferramentas dos agentes do Dify)

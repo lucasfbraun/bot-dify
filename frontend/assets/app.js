@@ -51,9 +51,12 @@ class ErroApi extends Error {
   constructor(status, mensagem) { super(mensagem); this.status = status; }
 }
 
-async function api(caminho, { metodo = 'GET', corpo, sinal } = {}) {
+async function api(caminho, { metodo = 'GET', corpo, bruto, sinal } = {}) {
   const opts = { method: metodo, credentials: 'same-origin', headers: { 'X-Requested-With': 'agente-pu' }, signal: sinal };
-  if (corpo !== undefined) {
+  if (bruto !== undefined) {  // Blob enviado como está (ex.: áudio WAV)
+    opts.headers['Content-Type'] = bruto.type;
+    opts.body = bruto;
+  } else if (corpo !== undefined) {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(corpo);
   }
@@ -267,6 +270,7 @@ if ('serviceWorker' in navigator && window.isSecureContext) {
 /* ------------------------------------------------------------------ login */
 function mostrarLogin(mensagem) {
   pararGeracao(true);
+  cancelarGravacao();
   $('#tela-app').hidden = true;
   $('#tela-login').hidden = false;
   const erro = $('#login-erro');
@@ -436,6 +440,7 @@ function aplicarAgenteNaTela() {
 }
 
 function selecionarAgente(a, { manterConversa = false } = {}) {
+  cancelarGravacao();  // o áudio seria transcrito pelo agente anterior
   estado.agenteAtual = a;
   estado.info = null;
   estado.conversas = [];
@@ -473,6 +478,7 @@ function acessoAoAgentePerdido(msg) {
 
 function mostrarSemAgente() {
   pararGeracao(true);
+  cancelarGravacao();
   limparChat();
   estado.conversas = [];
   desenharConversas();
@@ -487,6 +493,7 @@ function mostrarSemAgente() {
     ? 'Nenhum agente disponível para você. Cadastre ou marque um agente em Administração > Agentes.'
     : 'Nenhum agente foi liberado para você ainda. Peça a liberação ao administrador.';
   $('#sugestoes', boasVindas).innerHTML = '';
+  atualizarBotaoAudio();
   atualizarURL();
   ajustarAltura();
 }
@@ -520,6 +527,7 @@ function desenharAbertura() {
   const texto = estado.info?.abertura || a.descricao || ABERTURA_PADRAO;
   $('#abertura', boasVindas).textContent = texto.replace(/[*_#`]/g, '').trim();
   desenharSugestoes();
+  atualizarBotaoAudio();
 }
 
 function desenharSugestoes() {
@@ -807,6 +815,176 @@ function rolarFim(forcar = false) {
   if (forcar || seguirFim) box.scrollTop = box.scrollHeight;
 }
 
+/* ------------------------------------------------------------------ áudio (voz para texto) */
+/* Grava no navegador, converte para WAV 16 kHz mono (o Dify não aceita o webm que o Chrome grava),
+   manda para o servidor transcrever com o modelo do agente e põe o texto na caixa para a pessoa revisar. */
+const AUDIO_MAX_SEG = 300;        // 5 min ≈ 9,6 MB em WAV 16 kHz (servidor aceita até AUDIO_MAX_MB)
+const AUDIO_MIN_SEG = 0.7;
+let gravacao = null;              // { rec, stream, partes, inicio, timer, cancelada, aid, abort }
+
+function audioSuportado() {
+  return window.isSecureContext && !!navigator.mediaDevices?.getUserMedia && 'MediaRecorder' in window
+    && !!(window.AudioContext || window.webkitAudioContext) && 'OfflineAudioContext' in window;
+}
+
+function atualizarBotaoAudio() {
+  const pode = audioSuportado() && !!estado.agenteAtual && !!estado.info?.audio;
+  $('#btn-microfone').hidden = !pode || !!gravacao;
+  $('#btn-microfone').disabled = estado.gerando;
+}
+
+function tempoGravacao(seg) {
+  const s = Math.floor(seg);
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function modoGravacao(fase) {  // null | 'gravando' | 'transcrevendo'
+  const caixa = $('#compositor-caixa');
+  caixa.classList.toggle('em-gravacao', !!fase);
+  $('#gravando').hidden = !fase;
+  $('#pergunta').hidden = !!fase;
+  $('#btn-enviar').hidden = !!fase || estado.gerando;
+  $('#btn-concluir').hidden = fase !== 'gravando';
+  $('#gravando').classList.toggle('transcrevendo', fase === 'transcrevendo');
+  $('#grav-texto').textContent = fase === 'transcrevendo' ? 'Transcrevendo o áudio…' : 'Gravando… fale a sua pergunta';
+  if (!fase) $('#grav-tempo').textContent = '0:00';
+  atualizarBotaoAudio();
+}
+
+async function iniciarGravacao() {
+  if (gravacao || estado.gerando || !estado.agenteAtual) return;
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+  } catch (e) {
+    toast(e.name === 'NotAllowedError' ? 'Permita o uso do microfone no navegador (ícone do cadeado na barra de endereço) para enviar áudio.'
+      : e.name === 'NotFoundError' ? 'Nenhum microfone encontrado neste aparelho.'
+        : 'Não foi possível usar o microfone.', 6000);
+    return;
+  }
+  let rec;
+  try {
+    rec = new MediaRecorder(stream);
+  } catch {
+    stream.getTracks().forEach((t) => t.stop());
+    toast('Este navegador não consegue gravar áudio.');
+    return;
+  }
+  const g = { rec, stream, partes: [], inicio: performance.now(), cancelada: false, aid: estado.agenteAtual.id, abort: null };
+  gravacao = g;
+  rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) g.partes.push(ev.data); };
+  rec.onstop = () => finalizarGravacao(g);
+  rec.start(1000);
+  g.timer = setInterval(() => {
+    const seg = (performance.now() - g.inicio) / 1000;
+    $('#grav-tempo').textContent = tempoGravacao(seg);
+    if (seg >= AUDIO_MAX_SEG) {
+      toast('Limite de 5 minutos atingido: transcrevendo o que foi gravado.');
+      concluirGravacao();
+    }
+  }, 250);
+  modoGravacao('gravando');
+}
+
+function soltarMicrofone(g) {
+  clearInterval(g.timer);
+  g.stream.getTracks().forEach((t) => t.stop());
+}
+
+function concluirGravacao() {
+  const g = gravacao;
+  if (!g || g.rec.state === 'inactive') return;
+  g.segundos = (performance.now() - g.inicio) / 1000;
+  soltarMicrofone(g);
+  g.rec.stop();  // dispara onstop -> finalizarGravacao
+}
+
+/* descarta a gravação (ou a transcrição em andamento); também usada ao trocar de conversa/agente e ao sair */
+function cancelarGravacao() {
+  const g = gravacao;
+  if (!g) return;
+  g.cancelada = true;
+  gravacao = null;
+  soltarMicrofone(g);
+  if (g.rec.state !== 'inactive') g.rec.stop();
+  g.abort?.abort();
+  modoGravacao(null);
+}
+
+async function finalizarGravacao(g) {
+  if (g.cancelada) return;
+  if ((g.segundos || 0) < AUDIO_MIN_SEG || !g.partes.length) {
+    gravacao = null;
+    modoGravacao(null);
+    toast('Áudio curto demais. Toque no microfone, fale e depois toque em ✓.');
+    return;
+  }
+  modoGravacao('transcrevendo');
+  try {
+    const wav = await paraWav16k(new Blob(g.partes, { type: g.rec.mimeType || 'audio/webm' }));
+    if (g.cancelada) return;
+    g.abort = new AbortController();
+    const r = await (await api(rota('/audio', g.aid), { metodo: 'POST', bruto: wav, sinal: g.abort.signal })).json();
+    if (g.cancelada || estado.agenteAtual?.id !== g.aid) return;
+    const ta = $('#pergunta');
+    ta.value = ta.value.trim() ? `${ta.value.trimEnd()} ${r.texto}` : r.texto;
+    gravacao = null;
+    modoGravacao(null);
+    ajustarAltura();
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    toast('Confira o texto e toque em enviar.');
+  } catch (e) {
+    if (g.cancelada || e.name === 'AbortError') return;
+    gravacao = null;
+    modoGravacao(null);
+    if (e.status === 401) return;
+    if (e.status === 403) { acessoAoAgentePerdido(e.message); return; }
+    toast(e.status === 413 && e.message === 'Erro 413'
+      ? 'O servidor recusou o áudio por tamanho. Grave um trecho menor (ou peça à TI para ajustar o nginx).'
+      : e instanceof ErroApi ? e.message : 'Não foi possível ler o áudio gravado.', 6000);
+  }
+}
+
+/* decodifica o que o navegador gravou (webm/opus, mp4/aac…) e regrava em WAV PCM 16 bits, 16 kHz, mono */
+async function paraWav16k(blob, taxa = 16000) {
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx();
+  let audio;
+  try {
+    audio = await ctx.decodeAudioData(await blob.arrayBuffer());
+  } finally {
+    ctx.close?.();
+  }
+  const off = new OfflineAudioContext(1, Math.max(1, Math.ceil(audio.duration * taxa)), taxa);
+  const fonte = off.createBufferSource();
+  fonte.buffer = audio;
+  fonte.connect(off.destination);  // mistura os canais em mono
+  fonte.start();
+  const pcm = (await off.startRendering()).getChannelData(0);
+
+  const dv = new DataView(new ArrayBuffer(44 + pcm.length * 2));
+  const txt = (pos, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(pos + i, s.charCodeAt(i)); };
+  txt(0, 'RIFF');
+  dv.setUint32(4, 36 + pcm.length * 2, true);
+  txt(8, 'WAVE');
+  txt(12, 'fmt ');
+  dv.setUint32(16, 16, true);         // tamanho do bloco fmt
+  dv.setUint16(20, 1, true);          // PCM
+  dv.setUint16(22, 1, true);          // mono
+  dv.setUint32(24, taxa, true);
+  dv.setUint32(28, taxa * 2, true);   // bytes por segundo
+  dv.setUint16(32, 2, true);          // bytes por amostra
+  dv.setUint16(34, 16, true);         // bits por amostra
+  txt(36, 'data');
+  dv.setUint32(40, pcm.length * 2, true);
+  for (let i = 0; i < pcm.length; i++) {
+    const v = Math.max(-1, Math.min(1, pcm[i]));
+    dv.setInt16(44 + i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
+  }
+  return new Blob([dv], { type: 'audio/wav' });
+}
+
 /* ------------------------------------------------------------------ envio + streaming */
 function ajustarAltura() {
   const ta = $('#pergunta');
@@ -820,6 +998,7 @@ function modoGerando(sim) {
   estado.gerando = sim;
   $('#btn-enviar').hidden = sim;
   $('#btn-parar').hidden = !sim;
+  atualizarBotaoAudio();
   ajustarAltura();
 }
 
@@ -1454,6 +1633,7 @@ function ligarEventos() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      if (gravacao && !document.querySelector('dialog[open]')) cancelarGravacao();
       fecharMenu();
       fecharLateral();
     }
@@ -1483,6 +1663,9 @@ function ligarEventos() {
   });
   $('#form-chat').addEventListener('submit', (e) => { e.preventDefault(); enviarPergunta(); });
   $('#btn-parar').addEventListener('click', () => pararGeracao());
+  $('#btn-microfone').addEventListener('click', iniciarGravacao);
+  $('#btn-concluir').addEventListener('click', concluirGravacao);
+  $('#grav-cancelar').addEventListener('click', cancelarGravacao);
   $('#mensagens').addEventListener('scroll', () => {
     const box = $('#mensagens');
     seguirFim = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
