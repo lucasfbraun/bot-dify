@@ -5,21 +5,50 @@ services:
     container_name: agente-pu-web
     restart: unless-stopped
     env_file: .env
+    environment:
+      # conversor de arquivos (LibreOffice + OCR) do envio de conhecimento
+      CONVERSOR_URL: http://conversor:8000
     ports:
       # só a própria máquina acessa; o nginx (HTTPS) faz o proxy para cá
       - "127.0.0.1:8090:8000"
     volumes:
       - agente-pu-dados:/data
-    # Se o HTTPS for feito pelo nginx do próprio Dify (container), descomente para
-    # colocar este app na mesma rede do Dify (veja o README, opção B):
-    # networks:
-    #   - default
-    #   - dify
+    depends_on:
+      - conversor
+    networks:
+      - default
+      - conversor
+      # Se o HTTPS for feito pelo nginx do próprio Dify (container), descomente para
+      # colocar este app também na rede do Dify (veja o README, opção B):
+      # - dify
+
+  # Converte PPT/PPTX/DOC/imagens para PDF e aplica OCR nos arquivos enviados para aprovação.
+  # Isolado: sem segredos, sem volume, sem internet (rede interna), sistema de arquivos só leitura.
+  conversor:
+    build: ./conversor
+    image: agente-pu-conversor:latest
+    container_name: agente-pu-conversor
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /tmp:size=1g
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 256
+    networks:
+      - conversor
 
 volumes:
   agente-pu-dados:
 
-# networks:
-#   dify:
-#     external: true
-#     name: docker_default
+networks:
+  # rede interna: só o agente-pu-web fala com o conversor, e o conversor não sai para a internet
+  conversor:
+    internal: true
+  # dify:
+  #   external: true
+  #   name: docker_default

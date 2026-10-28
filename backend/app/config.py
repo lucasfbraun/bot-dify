@@ -39,6 +39,14 @@ class Settings:
     # O navegador grava em WAV 16 kHz mono: ~1,9 MB por minuto, e limita a gravação a 5 min (~9,6 MB).
     AUDIO_MAX_MB = int(os.getenv("AUDIO_MAX_MB", "12"))
 
+    # Envio de conhecimento com aprovação
+    # Chave de API de Conhecimento do Dify (ds-...): cria as bases colaborativas e envia/apaga documentos
+    DIFY_DATASET_API_KEY = os.getenv("DIFY_DATASET_API_KEY", "")
+    CONHECIMENTO_MAX_MB = int(os.getenv("CONHECIMENTO_MAX_MB", "15"))   # o Dify aceita 15 MB por padrão
+    # conversor isolado (LibreOffice + OCR); vazio = sem conversão (PPT/DOC/imagens ficam indisponíveis)
+    CONVERSOR_URL = os.getenv("CONVERSOR_URL", "").rstrip("/")
+    CONHECIMENTO_DIR = os.path.join(DATA_DIR, "conhecimento")           # arquivos só até a decisão
+
     # Registros e exportação de conversas
     FUSO_HORARIO = os.getenv("FUSO_HORARIO", "America/Sao_Paulo")   # filtros por data e horários do TXT
     EXPORTAR_MAX_CONVERSAS = int(os.getenv("EXPORTAR_MAX_CONVERSAS", "1000"))

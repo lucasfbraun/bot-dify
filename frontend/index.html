@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=4">
+  <link rel="stylesheet" href="/assets/app.css?v=5">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -74,6 +74,8 @@
         <div class="menu" id="menu-usuario" role="menu" hidden>
           <div class="menu-cab"><strong id="menu-nome"></strong><span id="menu-email"></span></div>
           <button role="menuitem" id="menu-chat">Conversas</button>
+          <button role="menuitem" id="menu-enviar" hidden>Enviar conhecimento</button>
+          <button role="menuitem" id="menu-aprovacoes" hidden>Aprovações <span class="contador" id="contador-pendentes" hidden></span></button>
           <button role="menuitem" id="menu-admin" hidden>Administração</button>
           <button role="menuitem" id="menu-tema">Tema: automático</button>
           <button role="menuitem" id="menu-sair">Sair</button>
@@ -141,6 +143,87 @@
       </main>
 
       <!-- administração -->
+      <!-- conhecimento: enviar, aprovar, aprovados e registros -->
+      <main class="principal admin" id="view-conhecimento" hidden>
+        <div class="admin-cab">
+          <div>
+            <h2>Conhecimento</h2>
+            <p class="muted">Arquivos enviados para os agentes aprenderem. Nada entra na base de um agente sem a aprovação de um aprovador.</p>
+          </div>
+        </div>
+        <div class="abas" role="tablist">
+          <button role="tab" class="aba-conh ativa" data-aba="enviar" aria-selected="true">Enviar e meus envios</button>
+          <button role="tab" class="aba-conh" data-aba="pendentes" aria-selected="false">Pendentes <span class="contador" id="contador-aba" hidden></span></button>
+          <button role="tab" class="aba-conh" data-aba="aprovados" aria-selected="false">Aprovados</button>
+          <button role="tab" class="aba-conh" data-aba="registros" aria-selected="false">Registros de aprovação</button>
+        </div>
+        <div id="conh-enviar">
+          <form class="cartao-envio" id="form-envio" novalidate>
+            <div class="envio-linha">
+              <div><label for="envio-agente">Agente</label><select id="envio-agente"></select></div>
+              <div class="envio-arquivo"><label for="envio-arquivo">Arquivo</label><input type="file" id="envio-arquivo"></div>
+            </div>
+            <label for="envio-justificativa">O que é o arquivo e por que o agente deve aprender com ele</label>
+            <textarea id="envio-justificativa" rows="2" maxlength="1000" placeholder="Ex.: ficha técnica revisada do FLEXX AG 2032 (revisão 3, outubro/2026)"></textarea>
+            <p class="muted dica" id="envio-dica"></p>
+            <p id="envio-erro" class="erro" role="alert" hidden></p>
+            <div class="dialogo-acoes"><button class="btn btn-primario" id="envio-botao" type="submit">Enviar para aprovação</button></div>
+          </form>
+          <h3 class="subtitulo">Meus envios</h3>
+          <div id="lista-meus-envios" class="lista-conv-admin"></div>
+        </div>
+        <div id="conh-pendentes" hidden>
+          <div id="lista-pendentes" class="lista-conv-admin"></div>
+        </div>
+        <div id="conh-aprovados" hidden>
+          <form class="filtros" id="filtros-aprovados">
+            <div><label for="apr-agente">Agente</label><select id="apr-agente"></select></div>
+            <div><label for="apr-usuario">Enviado por</label><input id="apr-usuario" list="lista-logins" placeholder="Todos" autocomplete="off" spellcheck="false"></div>
+            <div><label for="apr-status">Situação</label>
+              <select id="apr-status">
+                <option value="aprovado,desativado">Aprovados e desativados</option>
+                <option value="aprovado">Só ativos</option>
+                <option value="desativado">Só desativados</option>
+                <option value="excluido">Excluídos</option>
+                <option value="rejeitado">Rejeitados</option>
+              </select>
+            </div>
+            <div><label for="apr-inicio">De</label><input type="date" id="apr-inicio"></div>
+            <div><label for="apr-fim">Até</label><input type="date" id="apr-fim"></div>
+            <div class="filtros-acoes"><button class="btn btn-primario" type="submit">Filtrar</button><button class="btn btn-texto" type="reset">Limpar</button></div>
+          </form>
+          <div id="lista-aprovados" class="lista-conv-admin"></div>
+        </div>
+        <div id="conh-registros" hidden>
+          <form class="filtros" id="filtros-reg-conh">
+            <div><label for="rc-agente">Agente</label><select id="rc-agente"></select></div>
+            <div><label for="rc-usuario">Usuário</label><input id="rc-usuario" list="lista-logins" placeholder="Enviou ou decidiu" autocomplete="off" spellcheck="false"></div>
+            <div><label for="rc-acao">Ação</label>
+              <select id="rc-acao">
+                <option value="">Todas</option>
+                <option value="enviado">Enviado</option>
+                <option value="aprovado">Aprovado</option>
+                <option value="autoaprovado">Autoaprovado</option>
+                <option value="rejeitado">Rejeitado</option>
+                <option value="cancelado">Cancelado</option>
+                <option value="desativado">Desativado</option>
+                <option value="reativado">Reativado</option>
+                <option value="excluido">Excluído</option>
+                <option value="erro">Erro</option>
+              </select>
+            </div>
+            <div><label for="rc-inicio">De</label><input type="date" id="rc-inicio"></div>
+            <div><label for="rc-fim">Até</label><input type="date" id="rc-fim"></div>
+            <div class="filtros-acoes">
+              <button class="btn btn-primario" type="submit">Filtrar</button>
+              <button class="btn btn-texto" type="button" id="rc-csv">Exportar CSV</button>
+            </div>
+          </form>
+          <p class="muted resumo" id="rc-resumo"></p>
+          <div id="lista-reg-conh" class="lista-acessos"></div>
+        </div>
+      </main>
+
       <main class="principal admin" id="view-admin" hidden>
         <div class="admin-cab">
           <div>
@@ -165,6 +248,13 @@
           <div id="lista-usuarios" class="lista-usuarios"></div>
         </div>
         <div id="aba-agentes" hidden>
+          <div class="cartao-config" id="cartao-conhecimento">
+            <div class="cartao-config-texto">
+              <strong>Envio de conhecimento pelos usuários</strong>
+              <span class="muted" id="conh-config-status">Carregando…</span>
+            </div>
+            <button class="btn btn-texto" type="button" id="btn-chave-conh">Cadastrar chave</button>
+          </div>
           <div class="barra-aba">
             <p class="muted">Agentes de conversa do Dify. Cada um usa a própria chave de API, que fica só no servidor.</p>
             <button class="btn btn-primario" id="btn-add-agente">
@@ -269,6 +359,11 @@
         <label for="agente-sugestoes">Perguntas de exemplo (uma por linha; opcional: <i>Categoria | pergunta</i>)</label>
         <textarea id="agente-sugestoes" rows="4" placeholder="Produto | Tudo sobre o FLEXX AG 2032"></textarea>
         <p class="muted dica">Se o app tiver perguntas sugeridas configuradas no Dify, elas têm prioridade sobre estas.</p>
+        <div class="opcoes-conh">
+          <label class="chave"><input type="checkbox" id="agente-recebe"><span>Receber conhecimento dos usuários (com aprovação)</span></label>
+          <label class="chave"><input type="checkbox" id="agente-autoaprovacao"><span>Permitir que o aprovador aprove o próprio envio</span></label>
+          <p class="muted dica" id="agente-conh-dica"></p>
+        </div>
       </div>
       <p id="agente-erro" class="erro" role="alert" hidden></p>
       <div class="dialogo-acoes">
@@ -287,6 +382,35 @@
       <div class="dialogo-acoes">
         <button class="btn btn-texto" value="cancel">Cancelar</button>
         <button class="btn btn-primario" value="ok" id="confirma-ok">Confirmar</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- modal: detalhe de um envio de conhecimento -->
+  <dialog id="dlg-envio" class="dialogo dialogo-largo">
+    <div class="dialogo-corpo">
+      <div class="dialogo-cab">
+        <div class="conv-cab-texto"><h3 id="envio-titulo"></h3><p class="muted" id="envio-sub"></p></div>
+        <button class="btn-icone" id="envio-fechar" type="button" aria-label="Fechar">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5l13 13-1 1L5 6zm12 0l1 1L6 19l-1-1z"/></svg>
+        </button>
+      </div>
+      <div class="envio-detalhe" id="envio-detalhe"></div>
+      <div class="dialogo-acoes envio-acoes" id="envio-acoes"></div>
+    </div>
+  </dialog>
+
+  <!-- modal: chave de conhecimento do Dify -->
+  <dialog id="dlg-chave-conh" class="dialogo">
+    <form method="dialog" class="dialogo-corpo" id="form-chave-conh" novalidate>
+      <h3>Chave de API de Conhecimento do Dify</h3>
+      <p class="muted dica">No Dify: <b>Conhecimento</b> &gt; <b>API</b> (canto superior direito) &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b>. Use a chave geral do workspace: a plataforma cria a base colaborativa de cada agente e a quarentena. A chave fica só no servidor.</p>
+      <label for="chave-conh">Chave</label>
+      <input id="chave-conh" type="password" autocomplete="off" spellcheck="false" placeholder="dataset-…" maxlength="200">
+      <p id="chave-conh-erro" class="erro" role="alert" hidden></p>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
+        <button class="btn btn-primario" id="chave-conh-salvar" type="submit">Testar e salvar</button>
       </div>
     </form>
   </dialog>
@@ -313,6 +437,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=4" type="module"></script>
+  <script src="/assets/app.js?v=5" type="module"></script>
 </body>
 </html>

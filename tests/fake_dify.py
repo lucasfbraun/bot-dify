@@ -266,3 +266,145 @@ async def chat(req: Request):
             CONVERSAS[cid]["name"] = pergunta[:40]
 
     return StreamingResponse(gerar(), media_type="text/event-stream")
+
+
+# ------------------------------------------------------------------ API de conhecimento (chave ds-/dataset-)
+CHAVE_CONHECIMENTO = "dataset-Conhecimento00000000"
+CHAVE_CONHECIMENTO_RESTRITA = "dataset-Restrita0000000000000"  # imita chave presa a bases: não lista nem cria
+BASES: dict[str, dict] = {}
+DOCS: dict[str, dict] = {}
+
+
+def _ds(req: Request):
+    auth = req.headers.get("authorization", "")
+    return auth[7:] == CHAVE_CONHECIMENTO
+
+
+def _texto_do_arquivo(nome: str, dados: bytes) -> str:
+    """Imita a leitura do Dify. O conversor falso gera '%PDF-FALSO' + texto; PDF real vira um texto genérico."""
+    if dados.startswith(b"%PDF-FALSO"):
+        return dados.split(b"\n", 1)[1].decode("utf-8", "replace")
+    if nome.lower().endswith((".txt", ".md", ".csv")):
+        return dados.decode("utf-8", "replace")
+    return f"Conteúdo extraído de {nome}. " * 40
+
+
+@app.get("/v1/datasets")
+async def bases_listar(req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    return {"data": list(BASES.values())[:1], "has_more": False, "total": len(BASES)}
+
+
+@app.post("/v1/datasets")
+async def base_criar(req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    b = await req.json()
+    bid = str(uuid.uuid4())
+    BASES[bid] = {"id": bid, "name": b["name"], "indexing_technique": b.get("indexing_technique"),
+                  "description": b.get("description", "")}
+    return BASES[bid]
+
+
+@app.get("/v1/datasets/{bid}")
+async def base_info(bid: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if bid not in BASES:
+        return JSONResponse({"code": "not_found", "message": "Dataset not found."}, 404)
+    return BASES[bid]
+
+
+@app.post("/v1/datasets/{bid}/document/create-by-file")
+async def doc_criar(bid: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if bid not in BASES:
+        return JSONResponse({"code": "not_found", "message": "Dataset not found."}, 404)
+    form = await req.form()
+    cfg = json.loads(form.get("data") or "{}")
+    if not cfg.get("indexing_technique") and not BASES[bid].get("indexing_technique"):
+        return JSONResponse({"code": "invalid_param", "message": "indexing_technique is required."}, 400)
+    arq = form["file"]
+    dados = await arq.read()
+    if len(dados) > 15 * 1024 * 1024:
+        return JSONResponse({"code": "file_too_large", "message": "File size exceeded."}, 413)
+    did, batch = str(uuid.uuid4()), uuid.uuid4().hex
+    texto = _texto_do_arquivo(arq.filename, dados)
+    trechos = [texto[i:i + 400] for i in range(0, len(texto), 400)] or [""]
+    DOCS[did] = {"id": did, "base": bid, "name": arq.filename, "dados": dados, "tipo": arq.content_type, "batch": batch,
+                 "trechos": trechos, "consultas": 0, "enabled": True, "erro": "ERRO" in arq.filename.upper()}
+    return {"document": {"id": did, "name": arq.filename, "indexing_status": "waiting"}, "batch": batch}
+
+
+@app.get("/v1/datasets/{bid}/documents/{batch}/indexing-status")
+async def doc_status(bid: str, batch: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    d = next((x for x in DOCS.values() if x["batch"] == batch and x["base"] == bid), None)
+    if not d:
+        return {"data": []}
+    d["consultas"] += 1  # primeira consulta: "indexing"; depois: "completed" (ou "error")
+    situacao = "indexing" if d["consultas"] == 1 else ("error" if d["erro"] else "completed")
+    return {"data": [{"id": d["id"], "indexing_status": situacao, "error": "Falha simulada" if situacao == "error" else None,
+                      "completed_segments": len(d["trechos"]), "total_segments": len(d["trechos"])}]}
+
+
+@app.get("/v1/datasets/{bid}/documents/{did}/segments")
+async def doc_trechos(bid: str, did: str, req: Request, page: int = 1, limit: int = 20):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    d = DOCS.get(did)
+    if not d or d["base"] != bid:
+        return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
+    ini = (page - 1) * limit
+    pagina = d["trechos"][ini:ini + limit]
+    return {"data": [{"id": f"{did}-{ini + i}", "position": ini + i + 1, "content": t, "word_count": len(t.split())}
+                     for i, t in enumerate(pagina)], "has_more": ini + limit < len(d["trechos"]),
+            "total": len(d["trechos"]), "page": page, "limit": limit}
+
+
+@app.delete("/v1/datasets/{bid}/documents/{did}")
+async def doc_apagar(bid: str, did: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if did not in DOCS or DOCS[did]["base"] != bid:
+        return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
+    DOCS.pop(did)
+    from fastapi.responses import Response as R
+    return R(status_code=204)
+
+
+@app.patch("/v1/datasets/{bid}/documents/status/{acao}")
+async def doc_mudar_status(bid: str, acao: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    b = await req.json()
+    for did in b.get("document_ids", []):
+        if did in DOCS:
+            DOCS[did]["enabled"] = acao == "enable"
+    return {"result": "success"}
+
+
+@app.get("/v1/datasets/{bid}/documents/{did}/download")
+async def doc_link(bid: str, did: str, req: Request):
+    if not _ds(req):
+        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if did not in DOCS:
+        return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
+    return {"url": f"{str(req.base_url).rstrip('/')}/files/{did}?sign=teste"}
+
+
+@app.get("/files/{did}")
+async def doc_baixar(did: str, sign: str = ""):
+    if sign != "teste" or did not in DOCS:
+        return JSONResponse({"message": "invalid"}, 403)
+    from fastapi.responses import Response as R
+    return R(DOCS[did]["dados"], media_type=DOCS[did]["tipo"] or "application/octet-stream")
+
+
+@app.get("/teste/docs")
+async def teste_docs():
+    """Só para testes: estado das bases e documentos."""
+    return {"bases": BASES, "docs": {k: {kk: vv for kk, vv in v.items() if kk != "dados"} for k, v in DOCS.items()}}

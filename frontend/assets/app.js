@@ -56,8 +56,8 @@ class ErroApi extends Error {
   constructor(status, mensagem) { super(mensagem); this.status = status; }
 }
 
-async function api(caminho, { metodo = 'GET', corpo, bruto, sinal } = {}) {
-  const opts = { method: metodo, credentials: 'same-origin', headers: { 'X-Requested-With': 'agente-pu' }, signal: sinal };
+async function api(caminho, { metodo = 'GET', corpo, bruto, sinal, cabecalhos } = {}) {
+  const opts = { method: metodo, credentials: 'same-origin', headers: { 'X-Requested-With': 'agente-pu', ...(cabecalhos || {}) }, signal: sinal };
   if (bruto !== undefined) {  // Blob enviado como está (ex.: áudio WAV)
     opts.headers['Content-Type'] = bruto.type;
     opts.body = bruto;
@@ -332,6 +332,9 @@ async function sair() {
   estado.agenteAtual = null;
   estado.usuarios = [];
   estado.adminAgentes = [];
+  conh = { agentes: [], aprova: [], admin: false, max_mb: 15, extensoes: [] };
+  $('#menu-enviar').hidden = true;
+  $('#menu-aprovacoes').hidden = true;
   history.replaceState(null, '', '/');
   mostrarLogin();
 }
@@ -349,6 +352,7 @@ async function entrarApp() {
   atualizarSaudacao();
 
   const params = new URLSearchParams(location.search);
+  const rotaInicial = location.pathname;  // mostrarChat() troca o endereço; guarda antes
   const inicial = params.get('c');
   const irParaAdmin = location.pathname === '/admin' && u.perfil === 'admin';
   limparChat();
@@ -356,7 +360,9 @@ async function entrarApp() {
   else mostrarChat();
 
   await carregarAgentes(Number(params.get('a')) || null);
-  if (inicial && !irParaAdmin && estado.agenteAtual) abrirConversa(inicial);
+  await carregarBaseConhecimento();
+  if (rotaInicial === '/conhecimento' && (conh.agentes.length || podeAprovar())) abrirConhecimento();
+  else if (inicial && !irParaAdmin && estado.agenteAtual) abrirConversa(inicial);
 }
 
 function atualizarSaudacao() {
@@ -1164,9 +1170,11 @@ async function enviarPergunta() {
 /* ------------------------------------------------------------------ navegação chat/admin */
 function mostrarChat() {
   $('#view-admin').hidden = true;
+  $('#view-conhecimento').hidden = true;
+  clearTimeout(timerMeusEnvios);
   $('#view-chat').hidden = false;
   $('#lateral').hidden = false;
-  if (location.pathname === '/admin') {
+  if (location.pathname === '/admin' || location.pathname === '/conhecimento') {
     history.replaceState(null, '', '/');
     atualizarURL();
   }
@@ -1178,6 +1186,7 @@ function abrirAdmin() {
   fecharLateral();
   $('#view-chat').hidden = true;
   $('#lateral').hidden = true;
+  $('#view-conhecimento').hidden = true;
   $('#view-admin').hidden = false;
   history.replaceState(null, '', '/admin');
   trocarAba('usuarios');
@@ -1240,6 +1249,7 @@ function desenharUsuarios() {
         <div class="sub">Último acesso: ${esc(dataHora(u.ultimo_acesso))} · ${Number(u.qtd_acessos || 0)}×</div>
       </div>
       ${botaoAgentesUsuario(u)}
+      ${botaoAprovaUsuario(u)}
       <select aria-label="Perfil de ${esc(u.username)}">
         <option value="usuario"${u.perfil === 'usuario' ? ' selected' : ''}>Usuário</option>
         <option value="admin"${u.perfil === 'admin' ? ' selected' : ''}>Administrador</option>
@@ -1247,7 +1257,8 @@ function desenharUsuarios() {
       <label class="chave"><input type="checkbox"${u.ativo ? ' checked' : ''}><span>${u.ativo ? 'Ativo' : 'Inativo'}</span></label>
       <button class="btn-icone rem" aria-label="Remover ${esc(u.username)}" title="Remover acesso">${ICONE.lixo}</button>`;
 
-    $('.btn-agentes', linha).addEventListener('click', () => abrirAgentesUsuario(u));
+    $('.btn-agentes:not(.btn-aprova)', linha).addEventListener('click', () => abrirAgentesUsuario(u));
+    $('.btn-aprova', linha).addEventListener('click', () => abrirAgentesUsuario(u, 'aprova'));
     $('select', linha).addEventListener('change', async (ev) => {
       const perfil = ev.target.value;
       if (eu && perfil !== 'admin') {
@@ -1327,24 +1338,35 @@ function desenharChecksAgentes(box, marcados) {
 
 const idsMarcados = (box) => $$('input[type=checkbox]:checked', box).map((i) => Number(i.value));
 
-function abrirAgentesUsuario(u) {
+function abrirAgentesUsuario(u, modo = 'agentes') {
   const dlg = $('#dlg-agentes-usuario');
-  $('#agentes-usuario-titulo').textContent = `Agentes de ${u.nome || u.username}`;
-  $('#agentes-usuario-dica').textContent = u.perfil === 'admin'
-    ? 'Administradores recebem todos os agentes, inclusive os cadastrados depois. Desmarque os que esta pessoa não quer usar no chat.'
-    : 'Marque os agentes que esta pessoa pode usar. Tirar a marca corta o acesso na hora.';
+  const aprova = modo === 'aprova';
+  $('#agentes-usuario-titulo').textContent = aprova ? `${u.nome || u.username} aprova conhecimento de` : `Agentes de ${u.nome || u.username}`;
+  $('#agentes-usuario-dica').textContent = aprova
+    ? 'Marque os agentes em que esta pessoa analisa e aprova os arquivos enviados pelos usuários. Aprovadores também veem os conhecimentos aprovados desses agentes; só administradores excluem.'
+    : u.perfil === 'admin'
+      ? 'Administradores recebem todos os agentes, inclusive os cadastrados depois. Desmarque os que esta pessoa não quer usar no chat.'
+      : 'Marque os agentes que esta pessoa pode usar. Tirar a marca corta o acesso na hora.';
   const box = $('#agentes-usuario-lista');
-  desenharChecksAgentes(box, u.agentes);
+  desenharChecksAgentes(box, aprova ? (u.aprova || []) : u.agentes);
   dlg.returnValue = '';
   dlg.addEventListener('close', async () => {
     if (dlg.returnValue !== 'ok') return;
     const agentes = idsMarcados(box);
     try {
+      if (aprova) {
+        const r = await enviarJSON(`/api/admin/usuarios/${encodeURIComponent(u.username)}/aprovacoes`, 'PUT', { agentes });
+        u.aprova = r.aprova;
+        desenharUsuarios();
+        toast('Aprovações atualizadas.');
+        if (u.username === estado.usuario.username) carregarBaseConhecimento();
+        return;
+      }
       const r = await enviarJSON(`/api/admin/usuarios/${encodeURIComponent(u.username)}/agentes`, 'PUT', { agentes });
       u.agentes = r.agentes;
       desenharUsuarios();
       toast('Agentes atualizados.');
-      if (u.username === estado.usuario.username) carregarAgentes();
+      if (u.username === estado.usuario.username) { carregarAgentes(); carregarBaseConhecimento(); }
     } catch (e) {
       toast(e.message, 4500);
     }
@@ -1354,6 +1376,7 @@ function abrirAgentesUsuario(u) {
 
 /* ---- aba Agentes ---- */
 async function carregarAgentesAdmin() {
+  carregarConfigConhecimento();
   const lista = $('#lista-agentes');
   if (!estado.adminAgentes.length) lista.innerHTML = '<p class="muted">Carregando…</p>';
   try {
@@ -1383,6 +1406,7 @@ function desenharAgentesAdmin() {
         <div class="nome">${esc(a.nome)}${MODO_AGENTE[a.modo] ? `<span class="selo selo-modo">${esc(MODO_AGENTE[a.modo])}</span>` : ''}</div>
         <div class="sub">${esc(a.descricao || 'Sem descrição')}</div>
         <div class="sub mono">${esc(a.chave_mascarada)}</div>
+        ${a.recebe_conhecimento ? `<div class="sub conh-selo">📥 Recebe conhecimento · ${a.aprovadores?.length ? `aprovadores: ${esc(a.aprovadores.join(', '))}` : '<b>sem aprovador</b>'}${a.autoaprovacao ? '' : ' · sem autoaprovação'}</div>` : ''}
       </div>
       <div class="qtd">${qtd} ${qtd === 1 ? 'usuário' : 'usuários'}</div>
       <label class="chave"><input type="checkbox"${a.ativo ? ' checked' : ''}><span>${a.ativo ? 'Ativo' : 'Inativo'}</span></label>
@@ -1454,6 +1478,11 @@ function abrirDialogoAgente(a = null) {
   $('#agente-campos-edicao').hidden = !editar;
   $('#agente-descricao').value = editar ? a.descricao || '' : '';
   $('#agente-sugestoes').value = editar ? sugestoesParaTexto(a.sugestoes) : '';
+  $('#agente-recebe').checked = !!a?.recebe_conhecimento;
+  $('#agente-autoaprovacao').checked = a ? !!a.autoaprovacao : true;
+  $('#agente-conh-dica').innerHTML = a?.dataset_id
+    ? `Base no Dify: <b>Colaborativo - ${esc(a.nome)}</b>. Ela precisa estar ligada a este agente no Dify (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar).`
+    : 'Ao ligar, a plataforma cria no Dify a base <b>Colaborativo - nome do agente</b>. Depois, ligue essa base ao agente no Dify (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar).';
   $('#agente-erro').hidden = true;
   $('#agente-salvar').disabled = false;
   $('#agente-salvar').textContent = editar ? 'Salvar' : 'Verificar e cadastrar';
@@ -1473,7 +1502,8 @@ async function salvarAgente(e) {
   let corpo;
   if (a) {
     if (!nome) { erro.textContent = 'Informe o nome do agente.'; erro.hidden = false; return; }
-    corpo = { nome, descricao: $('#agente-descricao').value.trim(), sugestoes: textoParaSugestoes($('#agente-sugestoes').value) };
+    corpo = { nome, descricao: $('#agente-descricao').value.trim(), sugestoes: textoParaSugestoes($('#agente-sugestoes').value),
+      recebe_conhecimento: $('#agente-recebe').checked, autoaprovacao: $('#agente-autoaprovacao').checked };
     if (chave) corpo.chave = chave;
   } else {
     if (!chave) { erro.textContent = 'Cole a chave da API do Dify (começa com app-).'; erro.hidden = false; return; }
@@ -1487,7 +1517,10 @@ async function salvarAgente(e) {
       ? await enviarJSON(`/api/admin/agentes/${a.id}`, 'PATCH', corpo)
       : await enviarJSON('/api/admin/agentes', 'POST', corpo);
     $('#dlg-agente').close();
-    toast(a ? 'Agente atualizado.' : `"${r.nome}" cadastrado. Administradores já têm acesso; libere para os demais na aba Usuários.`, 6000);
+    const ligouAgora = a && !a.recebe_conhecimento && r.recebe_conhecimento;
+    toast(ligouAgora ? `Base "Colaborativo - ${r.nome}" criada no Dify. Ligue-a ao agente no Dify (Conhecimento > Adicionar > Publicar) e marque os aprovadores na aba Usuários.`
+      : a ? 'Agente atualizado.' : `"${r.nome}" cadastrado. Administradores já têm acesso; libere para os demais na aba Usuários.`, ligouAgora ? 12000 : 6000);
+    if (a) carregarBaseConhecimento();
     carregarAgentesAdmin();
     carregarAgentes();
   } catch (err) {
@@ -1762,6 +1795,480 @@ async function abrirConversaAdmin(c) {
   }
 }
 
+/* ------------------------------------------------------------------ conhecimento (envio com aprovação) */
+const STATUS_ENVIO = {
+  processando: ['Processando…', 'neutro'],
+  pendente: ['Aguardando aprovação', 'aviso'],
+  publicando: ['Publicando…', 'neutro'],
+  erro: ['Erro no processamento', 'falha'],
+  aprovado: ['Aprovado', 'ok'],
+  rejeitado: ['Rejeitado', 'falha'],
+  cancelado: ['Cancelado', 'neutro'],
+  desativado: ['Desativado', 'aviso'],
+  excluido: ['Excluído', 'falha'],
+};
+const ACAO_CONH = {
+  enviado: 'Enviado', processado: 'Pronto para análise', erro: 'Erro no processamento', cancelado: 'Cancelado por quem enviou',
+  aprovado: 'Aprovado', autoaprovado: 'Autoaprovado', rejeitado: 'Rejeitado', desativado: 'Desativado (admin)',
+  reativado: 'Reativado (admin)', excluido: 'Excluído (admin)', retomado: 'Retomado após reinício',
+};
+const NIVEL_ALERTA = { alto: 'Atenção', medio: 'Verifique', info: 'Informação' };
+
+let conh = { agentes: [], aprova: [], admin: false, max_mb: 15, extensoes: [] };
+let abaConh = 'enviar';
+let timerMeusEnvios = null;
+
+const tamanhoLegivel = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1).replace('.', ',')} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+const seloStatus = (st) => { const [t, c] = STATUS_ENVIO[st] || [st, 'neutro']; return `<span class="selo-status ${c}">${esc(t)}</span>`; };
+const podeAprovar = () => conh.admin || conh.aprova.length > 0;
+
+/* quem pode enviar (e para quais agentes) e quem aprova: define os itens do menu */
+async function carregarBaseConhecimento() {
+  try {
+    const r = await getJSON('/api/conhecimento/agentes');
+    conh = { ...r, agentes: r.itens };
+  } catch {
+    conh = { agentes: [], aprova: [], admin: false, max_mb: 15, extensoes: [] };
+  }
+  $('#menu-enviar').hidden = !conh.agentes.length;
+  $('#menu-aprovacoes').hidden = !podeAprovar();
+  atualizarContadorPendentes();
+}
+
+async function atualizarContadorPendentes() {
+  if (!podeAprovar()) return;
+  try {
+    const { itens } = await getJSON('/api/conhecimento/envios?status=pendente');
+    const n = itens.filter((e) => e.pode_decidir).length;
+    for (const id of ['#contador-pendentes', '#contador-aba']) {
+      $(id).textContent = String(n);
+      $(id).hidden = !n;
+    }
+  } catch { /* sem permissão ou sem rede: só não mostra o número */ }
+}
+
+function abrirConhecimento(aba = 'enviar') {
+  fecharMenu();
+  fecharLateral();
+  $('#view-chat').hidden = true;
+  $('#view-admin').hidden = true;
+  $('#lateral').hidden = true;
+  $('#view-conhecimento').hidden = false;
+  history.replaceState(null, '', '/conhecimento');
+  for (const b of $$('.aba-conh')) {
+    if (b.dataset.aba !== 'enviar') b.hidden = !podeAprovar();
+  }
+  $('.aba-conh[data-aba="enviar"]').hidden = !conh.agentes.length;
+  if (aba === 'enviar' && !conh.agentes.length) aba = 'pendentes';
+  trocarAbaConh(aba);
+}
+
+function trocarAbaConh(aba) {
+  abaConh = aba;
+  for (const b of $$('.aba-conh')) {
+    b.classList.toggle('ativa', b.dataset.aba === aba);
+    b.setAttribute('aria-selected', String(b.dataset.aba === aba));
+  }
+  for (const nome of ['enviar', 'pendentes', 'aprovados', 'registros']) $(`#conh-${nome}`).hidden = nome !== aba;
+  clearTimeout(timerMeusEnvios);
+  if (aba === 'enviar') prepararFormEnvio();
+  else if (aba === 'pendentes') carregarPendentes();
+  else if (aba === 'aprovados') abrirAprovados();
+  else abrirRegistrosConh();
+}
+
+/* ---- enviar ---- */
+function prepararFormEnvio() {
+  const sel = $('#envio-agente');
+  const atual = sel.value;
+  sel.innerHTML = conh.agentes.map((a) => `<option value="${a.id}">${esc(a.nome)}</option>`).join('');
+  if (atual) sel.value = atual;
+  else if (estado.agenteAtual && conh.agentes.some((a) => a.id === estado.agenteAtual.id)) sel.value = String(estado.agenteAtual.id);
+  $('#envio-arquivo').accept = conh.extensoes.map((e) => `.${e}`).join(',');
+  const ocr = conh.extensoes.filter((e) => ['pdf', 'ppt', 'pptx', 'doc', 'docx', 'jpg', 'png'].includes(e));
+  $('#envio-dica').textContent = `Aceita ${conh.extensoes.map((e) => e.toUpperCase()).join(', ')} até ${conh.max_mb} MB. `
+    + (ocr.length ? 'PDFs escaneados, apresentações, imagens e textos dentro de figuras passam por leitura automática (OCR). ' : '')
+    + 'O arquivo fica em quarentena até um aprovador analisar.';
+  carregarMeusEnvios();
+}
+
+async function enviarConhecimento(e) {
+  e.preventDefault();
+  const erro = $('#envio-erro');
+  const arq = $('#envio-arquivo').files[0];
+  const justificativa = $('#envio-justificativa').value.trim();
+  erro.hidden = true;
+  const falha = (m) => { erro.textContent = m; erro.hidden = false; };
+  if (!arq) return falha('Escolha o arquivo.');
+  const ext = (arq.name.split('.').pop() || '').toLowerCase();
+  if (!conh.extensoes.includes(ext)) return falha(`Tipo de arquivo não aceito (.${ext}).`);
+  if (arq.size > conh.max_mb * 1048576) return falha(`O arquivo tem ${tamanhoLegivel(arq.size)}; o limite é ${conh.max_mb} MB.`);
+  if (justificativa.length < 10) return falha('Explique em poucas palavras o que é o arquivo e por que deve entrar.');
+  const btn = $('#envio-botao');
+  btn.disabled = true;
+  btn.textContent = 'Enviando…';
+  try {
+    await api(`/api/conhecimento/envios?agente=${encodeURIComponent($('#envio-agente').value)}`, {
+      metodo: 'POST', bruto: new Blob([arq], { type: 'application/octet-stream' }),
+      cabecalhos: { 'X-Arquivo-Nome': encodeURIComponent(arq.name), 'X-Justificativa': encodeURIComponent(justificativa) },
+    });
+    $('#envio-arquivo').value = '';
+    $('#envio-justificativa').value = '';
+    toast('Arquivo enviado. Ele vai para análise assim que terminar de ser processado.', 5000);
+    carregarMeusEnvios();
+  } catch (err) {
+    falha(err.status === 413 && err.message.startsWith('Erro 413') ? 'O servidor recusou o arquivo por tamanho.' : err.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Enviar para aprovação';
+  }
+}
+
+function linhaEnvio(e, { mostrarQuem = false } = {}) {
+  const d = document.createElement('div');
+  d.className = 'envio-linha-lista';
+  const alertasAltos = (e.alertas || []).filter((a) => a.nivel === 'alto').length;
+  d.innerHTML = `
+    <div class="info">
+      <div class="nome" title="${esc(e.arquivo_nome)}">${esc(e.arquivo_nome)}</div>
+      <div class="sub">${mostrarQuem ? `${esc(nomeDoUsuario(e.username))} · ` : ''}${esc(e.agente_nome || '')} · ${esc(dataHora(e.criado_em))} · ${esc(tamanhoLegivel(e.tamanho))}${e.autoaprovado ? ' · <b>autoaprovado</b>' : ''}</div>
+      ${e.status === 'rejeitado' && e.motivo ? `<div class="sub motivo">Motivo: ${esc(e.motivo)}</div>` : ''}
+      ${e.status === 'erro' && e.erro ? `<div class="sub motivo">${esc(e.erro)}</div>` : ''}
+    </div>
+    <div class="estado">${seloStatus(e.status)}${alertasAltos ? `<span class="selo-status falha" title="Alertas importantes">⚠ ${alertasAltos}</span>` : ''}</div>
+    <button type="button" class="btn btn-texto">Ver</button>`;
+  $('button', d).addEventListener('click', () => abrirEnvio(e.id));
+  return d;
+}
+
+async function carregarMeusEnvios() {
+  const lista = $('#lista-meus-envios');
+  try {
+    const { itens } = await getJSON('/api/conhecimento/meus');
+    lista.innerHTML = itens.length ? '' : '<p class="muted">Você ainda não enviou nenhum arquivo.</p>';
+    for (const e of itens) lista.appendChild(linhaEnvio(e));
+    clearTimeout(timerMeusEnvios);  // enquanto houver arquivo em processamento, atualiza sozinho
+    if (abaConh === 'enviar' && !$('#view-conhecimento').hidden && itens.some((e) => ['processando', 'publicando'].includes(e.status))) {
+      timerMeusEnvios = setTimeout(carregarMeusEnvios, 3000);
+    }
+  } catch (err) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(err.message));
+  }
+}
+
+/* ---- pendentes ---- */
+async function carregarPendentes() {
+  const lista = $('#lista-pendentes');
+  lista.innerHTML = '<p class="muted">Carregando…</p>';
+  try {
+    const { itens } = await getJSON('/api/conhecimento/envios?status=pendente,processando');
+    lista.innerHTML = itens.length ? '' : '<p class="muted">Nada aguardando aprovação. 🎉</p>';
+    for (const e of itens) lista.appendChild(linhaEnvio(e, { mostrarQuem: true }));
+    atualizarContadorPendentes();
+  } catch (err) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(err.message));
+  }
+}
+
+/* ---- aprovados ---- */
+let aprovadosIniciados = false;
+
+function opcoesAgentesConh(sel) {
+  const ids = conh.admin ? null : conh.aprova;
+  const lista = (estado.adminAgentes.length ? estado.adminAgentes : estado.agentes).filter((a) => !ids || ids.includes(a.id));
+  const atual = sel.value;
+  sel.innerHTML = '<option value="">Todos que vejo</option>' + lista.map((a) => `<option value="${a.id}">${esc(a.nome)}</option>`).join('');
+  sel.value = atual;
+}
+
+async function abrirAprovados() {
+  if (conh.admin) await prepararFiltrosAdmin();
+  opcoesAgentesConh($('#apr-agente'));
+  aprovadosIniciados = true;
+  carregarAprovados();
+}
+
+async function carregarAprovados() {
+  const lista = $('#lista-aprovados');
+  const f = { status: $('#apr-status').value };
+  if ($('#apr-agente').value) f.agente = $('#apr-agente').value;
+  if ($('#apr-usuario').value.trim()) f.usuario = $('#apr-usuario').value.trim();
+  if ($('#apr-inicio').value) f.inicio = $('#apr-inicio').value;
+  if ($('#apr-fim').value) f.fim = $('#apr-fim').value;
+  lista.innerHTML = '<p class="muted">Carregando…</p>';
+  try {
+    const { itens } = await getJSON(`/api/conhecimento/envios?${paraQuery(f)}`);
+    lista.innerHTML = itens.length ? '' : '<p class="muted">Nenhum conhecimento com esses filtros.</p>';
+    for (const e of itens) lista.appendChild(linhaEnvio(e, { mostrarQuem: true }));
+  } catch (err) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(err.message));
+  }
+}
+
+/* ---- registros de aprovação ---- */
+let regConhIniciado = false;
+
+async function abrirRegistrosConh() {
+  if (conh.admin) await prepararFiltrosAdmin();
+  opcoesAgentesConh($('#rc-agente'));
+  if (!regConhIniciado) {
+    regConhIniciado = true;
+    $('#rc-inicio').value = hojeISO(-30);
+  }
+  carregarRegistrosConh();
+}
+
+function filtroRegConh() {
+  const f = {};
+  if ($('#rc-agente').value) f.agente = $('#rc-agente').value;
+  if ($('#rc-usuario').value.trim()) f.usuario = $('#rc-usuario').value.trim();
+  if ($('#rc-acao').value) f.acao = $('#rc-acao').value;
+  if ($('#rc-inicio').value) f.inicio = $('#rc-inicio').value;
+  if ($('#rc-fim').value) f.fim = $('#rc-fim').value;
+  return f;
+}
+
+async function carregarRegistrosConh() {
+  const lista = $('#lista-reg-conh');
+  lista.innerHTML = '<p class="muted">Carregando…</p>';
+  try {
+    const { itens, cortado } = await getJSON(`/api/conhecimento/registros?${paraQuery(filtroRegConh())}`);
+    $('#rc-resumo').textContent = itens.length ? `${itens.length} registro${itens.length === 1 ? '' : 's'}${cortado ? ' (os mais recentes)' : ''}` : '';
+    lista.innerHTML = itens.length ? '' : '<p class="muted">Nenhum registro com esses filtros.</p>';
+    for (const r of itens) {
+      const d = document.createElement('div');
+      d.className = 'acesso reg-conh';
+      const falha = ['rejeitado', 'erro', 'excluido', 'desativado'].includes(r.acao);
+      d.innerHTML = `<span>${esc(dataHora(r.quando))}</span><span class="reg-usuario">${esc(r.autor)}</span>`
+        + `<span class="${falha ? 'falha' : 'ok'}">${esc(ACAO_CONH[r.acao] || r.acao)}</span>`
+        + `<span class="reg-agente" title="${esc(r.arquivo_nome)}">${esc(r.arquivo_nome)} · ${esc(r.agente_nome || '')}</span>`
+        + `<span class="muted reg-detalhe" title="${esc(r.detalhe || '')}">${esc(r.detalhe || '')}</span>`;
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-texto reg-ver';
+      b.textContent = 'Ver envio';
+      b.addEventListener('click', () => abrirEnvio(r.envio_id));
+      d.appendChild(b);
+      lista.appendChild(d);
+    }
+  } catch (err) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(err.message));
+  }
+}
+
+async function exportarRegistrosConh() {
+  try {
+    const r = await api(`/api/conhecimento/registros?${paraQuery({ ...filtroRegConh(), formato: 'csv' })}`);
+    const nome = /filename="([^"]+)"/.exec(r.headers.get('content-disposition') || '')?.[1] || 'registros-aprovacao.csv';
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = nome;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    toast(`Arquivo ${nome} baixado.`);
+  } catch (err) {
+    toast(err.message, 5000);
+  }
+}
+
+/* ---- detalhe do envio ---- */
+let envioAberto = null;
+
+async function abrirEnvio(id) {
+  const dlg = $('#dlg-envio');
+  envioAberto = id;
+  $('#envio-titulo').textContent = 'Carregando…';
+  $('#envio-sub').textContent = '';
+  $('#envio-detalhe').innerHTML = '<p class="muted"><span class="spinner" style="display:inline-block;vertical-align:-2px"></span> Carregando…</p>';
+  $('#envio-acoes').innerHTML = '';
+  if (!dlg.open) dlg.showModal();
+  let e;
+  try {
+    e = await getJSON(`/api/conhecimento/envios/${id}`);
+  } catch (err) {
+    $('#envio-detalhe').innerHTML = '';
+    $('#envio-detalhe').appendChild(erroBox(err.message));
+    return;
+  }
+  if (envioAberto !== id) return;
+  desenharEnvio(e);
+}
+
+function desenharEnvio(e) {
+  $('#envio-titulo').textContent = e.arquivo_nome;
+  $('#envio-sub').innerHTML = `${seloStatus(e.status)} ${esc(e.agente_nome || '')} · enviado por ${esc(nomeDoUsuario(e.username))} em ${esc(dataHora(e.criado_em))}`
+    + (e.decidido_por ? ` · decidido por ${esc(nomeDoUsuario(e.decidido_por))}${e.autoaprovado ? ' <b>(autoaprovado)</b>' : ''}` : '');
+  const info = [
+    tamanhoLegivel(e.tamanho),
+    e.convertido ? `convertido para PDF${e.ocr && e.ocr !== 'nao_aplicavel' ? `, OCR ${e.ocr}` : ''}` : (e.ocr === 'nao_aplicavel' || !e.ocr ? 'enviado como está' : ''),
+    e.paginas ? `${e.paginas} página${e.paginas === 1 ? '' : 's'}` : '',
+    e.caracteres != null ? `${Number(e.caracteres).toLocaleString('pt-BR')} caracteres extraídos` : '',
+    e.trechos != null ? `${e.trechos} trecho${e.trechos === 1 ? '' : 's'}` : '',
+  ].filter(Boolean).join(' · ');
+  const alertas = (e.alertas || []).map((a) => `
+    <div class="alerta ${esc(a.nivel)}"><strong>${esc(NIVEL_ALERTA[a.nivel] || '')}: ${esc(a.titulo)}</strong>
+      <p>${esc(a.detalhe)}</p>${(a.exemplos || []).map((x) => `<code>${esc(x)}</code>`).join('')}</div>`).join('');
+  const temConteudo = ['pendente', 'publicando', 'aprovado', 'desativado'].includes(e.status);
+  const box = $('#envio-detalhe');
+  box.innerHTML = `
+    <div class="envio-bloco"><b>Justificativa</b><p>${esc(e.justificativa)}</p><p class="muted">${esc(info)}</p>
+      ${e.motivo ? `<p><b>${e.status === 'rejeitado' ? 'Motivo da rejeição' : 'Comentário da decisão'}:</b> ${esc(e.motivo)}</p>` : ''}
+      ${e.erro ? `<p class="falha-texto">${esc(e.erro)}</p>` : ''}
+      ${e.status === 'pendente' && !e.pode_decidir && e.username === estado.usuario.username && e.aprovadores?.includes(e.username) && !e.autoaprovacao_permitida
+        ? '<p class="muted">A autoaprovação está desligada neste agente: outro aprovador precisa decidir.</p>' : ''}
+      ${e.status === 'pendente' && e.aprovadores && !e.aprovadores.length ? '<p class="falha-texto">Este agente ainda não tem aprovador. Peça ao administrador para marcar um.</p>' : ''}
+    </div>
+    ${alertas ? `<div class="envio-bloco"><b>Alertas automáticos</b>${alertas}</div>` : (temConteudo ? '<div class="envio-bloco"><b>Alertas automáticos</b><p class="muted">Nenhum alerta encontrado.</p></div>' : '')}
+    ${temConteudo ? `<div class="envio-bloco"><b>Arquivo</b><p class="envio-links">
+        <a href="/api/conhecimento/envios/${e.id}/arquivo?qual=enviado" target="_blank" rel="noopener">Abrir ${e.convertido ? 'PDF (como o agente lê)' : 'arquivo'}</a>
+        ${e.convertido && ['pendente', 'publicando'].includes(e.status) ? ` · <a href="/api/conhecimento/envios/${e.id}/arquivo?qual=original">Baixar original (.${esc(e.arquivo_ext)})</a>` : ''}
+      </p></div>
+      <div class="envio-bloco"><b>Trechos que o agente vai consultar</b><div class="trechos" id="envio-trechos"><p class="muted">Carregando…</p></div></div>` : ''}
+    <details class="envio-bloco linha-tempo"><summary><b>Histórico</b></summary><ul>${(e.eventos || []).map((v) => `<li><span class="muted">${esc(dataHora(v.quando))}</span> ${esc(ACAO_CONH[v.acao] || v.acao)} · ${esc(v.autor)}${v.detalhe ? ` — ${esc(v.detalhe)}` : ''}</li>`).join('')}</ul></details>`;
+  if (temConteudo) carregarTrechos(e.id, 1);
+
+  const acoes = $('#envio-acoes');
+  acoes.innerHTML = '';
+  const botao = (texto, classe, fn) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = `btn ${classe}`;
+    b.textContent = texto;
+    b.addEventListener('click', () => fn(b));
+    acoes.appendChild(b);
+  };
+  if (e.pode_cancelar) botao('Cancelar envio', 'btn-texto', () => decidir(e, 'cancelar'));
+  if (e.pode_administrar) {
+    if (e.status === 'aprovado') botao('Desativar', 'btn-texto', () => decidir(e, 'desativar'));
+    if (e.status === 'desativado') botao('Reativar', 'btn-texto', () => decidir(e, 'reativar'));
+    botao('Excluir', 'btn-perigo', () => decidir(e, 'excluir'));
+  }
+  if (e.pode_decidir) {
+    botao('Rejeitar', 'btn-perigo', () => decidir(e, 'rejeitar'));
+    botao(e.username === estado.usuario.username ? 'Aprovar (autoaprovação)' : 'Aprovar', 'btn-primario', () => decidir(e, 'aprovar'));
+  }
+  botao('Fechar', 'btn-texto', () => $('#dlg-envio').close());
+}
+
+async function carregarTrechos(id, pagina) {
+  const box = $('#envio-trechos');
+  if (!box) return;
+  try {
+    const r = await getJSON(`/api/conhecimento/envios/${id}/trechos?pagina=${pagina}`);
+    if (envioAberto !== id) return;
+    if (pagina === 1) box.innerHTML = r.itens.length ? '' : '<p class="muted">Nenhum trecho.</p>';
+    else box.querySelector('.mais-trechos')?.remove();
+    for (const t of r.itens) {
+      const d = document.createElement('div');
+      d.className = 'trecho';
+      d.innerHTML = `<span class="trecho-num">#${t.posicao}</span>`;
+      const p = document.createElement('p');
+      p.textContent = t.texto;  // texto do arquivo: nunca vira HTML
+      d.appendChild(p);
+      box.appendChild(d);
+    }
+    if (r.mais) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-texto mais-trechos';
+      b.textContent = `Ver mais trechos${r.total ? ` (${r.total} no total)` : ''}`;
+      b.addEventListener('click', () => carregarTrechos(id, pagina + 1));
+      box.appendChild(b);
+    }
+  } catch (err) {
+    box.innerHTML = '';
+    box.appendChild(erroBox(err.message));
+  }
+}
+
+const TEXTOS_DECISAO = {
+  aprovar: { titulo: 'Aprovar este conhecimento?', texto: 'O arquivo entra na base do agente e passa a ser usado nas respostas. Comentário (opcional):', ok: 'Aprovar', obrigatorio: false },
+  rejeitar: { titulo: 'Rejeitar este envio?', texto: 'Quem enviou vai ver o motivo. Motivo (obrigatório):', ok: 'Rejeitar', obrigatorio: true },
+  cancelar: { titulo: 'Cancelar o envio?', texto: 'O arquivo é descartado e sai da fila de aprovação.', ok: 'Cancelar envio', obrigatorio: false, semTexto: true },
+  desativar: { titulo: 'Desativar este conhecimento?', texto: 'Ele deixa de ser usado pelo agente na hora, mas fica guardado para reativar. Motivo (obrigatório):', ok: 'Desativar', obrigatorio: true },
+  reativar: { titulo: 'Reativar este conhecimento?', texto: 'Ele volta a ser usado pelo agente. Motivo (obrigatório):', ok: 'Reativar', obrigatorio: true },
+  excluir: { titulo: 'Excluir definitivamente?', texto: 'O arquivo é apagado da base do agente no Dify e não tem volta. Motivo (obrigatório):', ok: 'Excluir', obrigatorio: true },
+};
+
+async function decidir(e, acao) {
+  const t = TEXTOS_DECISAO[acao];
+  let motivo = '';
+  for (;;) {
+    const r = await confirmar({ titulo: t.titulo, texto: `${e.arquivo_nome} — ${t.texto}`, input: !t.semTexto, valor: motivo, ok: t.ok });
+    if (r === null) return;
+    motivo = t.semTexto ? '' : String(r).trim();
+    if (!t.obrigatorio || motivo.length >= 5) break;
+    toast('Escreva o motivo (pelo menos 5 caracteres).');
+  }
+  try {
+    const corpo = acao === 'cancelar' ? undefined : { motivo };
+    const atualizado = await (await api(`/api/conhecimento/envios/${e.id}/${acao}`, { metodo: 'POST', corpo })).json();
+    toast({ aprovar: 'Aprovado: já está na base do agente.', rejeitar: 'Envio rejeitado.', cancelar: 'Envio cancelado.',
+      desativar: 'Conhecimento desativado.', reativar: 'Conhecimento reativado.', excluir: 'Conhecimento excluído.' }[acao], 4500);
+    if ($('#dlg-envio').open) abrirEnvio(atualizado.id);
+    trocarAbaConh(abaConh);
+  } catch (err) {
+    toast(err.message, 6000);
+  }
+}
+
+/* ---- administração: chave de conhecimento, agentes que recebem e aprovadores ---- */
+async function carregarConfigConhecimento() {
+  try {
+    const c = await getJSON('/api/admin/conhecimento/config');
+    $('#conh-config-status').textContent = c.chave_configurada
+      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
+      : 'Falta cadastrar a chave de API de Conhecimento do Dify para os agentes poderem receber arquivos.';
+    $('#btn-chave-conh').textContent = c.chave_configurada ? 'Trocar chave' : 'Cadastrar chave';
+    $('#cartao-conhecimento').classList.toggle('pendente', !c.chave_configurada);
+  } catch (err) {
+    $('#conh-config-status').textContent = err.message;
+  }
+}
+
+function abrirChaveConhecimento() {
+  $('#chave-conh').value = '';
+  $('#chave-conh-erro').hidden = true;
+  $('#dlg-chave-conh').showModal();
+  setTimeout(() => $('#chave-conh').focus(), 30);
+}
+
+async function salvarChaveConhecimento(e) {
+  e.preventDefault();
+  if (e.submitter?.value === 'cancel') { $('#dlg-chave-conh').close(); return; }
+  const erro = $('#chave-conh-erro');
+  const btn = $('#chave-conh-salvar');
+  erro.hidden = true;
+  btn.disabled = true;
+  btn.textContent = 'Testando no Dify…';
+  try {
+    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim() });
+    $('#dlg-chave-conh').close();
+    toast('Chave de conhecimento salva.');
+    carregarConfigConhecimento();
+  } catch (err) {
+    erro.textContent = err.message;
+    erro.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Testar e salvar';
+  }
+}
+
+function botaoAprovaUsuario(u) {
+  const nomes = estado.adminAgentes.filter((a) => (u.aprova || []).includes(a.id)).map((a) => a.nome);
+  const texto = nomes.length ? `Aprova: ${nomes.length === 1 ? nomes[0] : `${nomes.length} agentes`}` : 'Não aprova';
+  return `<button type="button" class="btn-agentes btn-aprova${nomes.length ? ' marcado' : ''}" title="${esc(nomes.length ? `Aprova conhecimento de: ${nomes.join(', ')}` : 'Não aprova conhecimento de nenhum agente')}"
+    aria-label="Aprovações de ${esc(u.username)}: ${esc(texto)}"${estado.adminAgentes.length ? '' : ' disabled'}>${esc(texto)}</button>`;
+}
+
 /* ---- diálogo: adicionar usuário pelo AD ---- */
 let buscaTimer;
 let buscaSeq = 0;
@@ -1875,7 +2382,7 @@ function ligarEventos() {
 
   $('#btn-avatar').addEventListener('click', (e) => {
     e.stopPropagation();
-    if ($('#menu-usuario').hidden) abrirMenu();
+    if ($('#menu-usuario').hidden) { abrirMenu(); atualizarContadorPendentes(); }
     else fecharMenu();
   });
   document.addEventListener('click', (e) => {
@@ -1890,6 +2397,18 @@ function ligarEventos() {
   });
   $('#menu-chat').addEventListener('click', () => { fecharMenu(); mostrarChat(); if (ehMobile()) abrirLateral(); });
   $('#menu-admin').addEventListener('click', abrirAdmin);
+  $('#menu-enviar').addEventListener('click', () => abrirConhecimento('enviar'));
+  $('#menu-aprovacoes').addEventListener('click', () => abrirConhecimento('pendentes'));
+  for (const b of $$('.aba-conh')) b.addEventListener('click', () => trocarAbaConh(b.dataset.aba));
+  $('#form-envio').addEventListener('submit', enviarConhecimento);
+  $('#filtros-aprovados').addEventListener('submit', (e) => { e.preventDefault(); carregarAprovados(); });
+  $('#filtros-aprovados').addEventListener('reset', () => setTimeout(carregarAprovados, 0));
+  $('#filtros-reg-conh').addEventListener('submit', (e) => { e.preventDefault(); carregarRegistrosConh(); });
+  $('#rc-csv').addEventListener('click', exportarRegistrosConh);
+  $('#envio-fechar').addEventListener('click', () => $('#dlg-envio').close());
+  $('#dlg-envio').addEventListener('close', () => { envioAberto = null; });
+  $('#btn-chave-conh').addEventListener('click', abrirChaveConhecimento);
+  $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
   $('#menu-tema').addEventListener('click', alternarTema);
   $('#menu-sair').addEventListener('click', sair);
 

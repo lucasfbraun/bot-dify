@@ -158,3 +158,76 @@ async def stream_chat(chave: str, username: str, pergunta: str, conversation_id:
                     yield json.loads(dado)
                 except ValueError:
                     continue
+
+
+# ------------------------------------------------------------------ bases de conhecimento (chave ds-...)
+def chave_conhecimento() -> tuple[str, str]:
+    """(chave, origem): a cadastrada na tela de administração tem prioridade sobre a do .env."""
+    from . import db  # import tardio: db não depende deste módulo
+    tela = db.get_meta("dify_dataset_key") or ""
+    if tela:
+        return tela, "tela"
+    return (settings.DIFY_DATASET_API_KEY, ".env") if settings.DIFY_DATASET_API_KEY else ("", "")
+
+
+def _ds() -> str:
+    return chave_conhecimento()[0]
+
+
+async def testar_chave_conhecimento(chave: str) -> None:
+    """Confere se a chave funciona e se pode listar/criar bases (chaves restritas a bases específicas não podem)."""
+    await _get(chave, "/datasets", {"page": 1, "limit": 1})
+
+
+async def base_criar(nome: str, descricao: str, tecnica: str) -> dict:
+    """Cria uma base de conhecimento. tecnica: high_quality (embeddings) ou economy (sem custo de IA)."""
+    return await _send(_ds(), "POST", "/datasets", {"name": nome[:40], "description": descricao[:400],
+                                                    "indexing_technique": tecnica, "permission": "only_me"})
+
+
+async def base_info(dataset_id: str) -> dict:
+    return await _get(_ds(), f"/datasets/{dataset_id}", {})
+
+
+async def documento_enviar(dataset_id: str, nome: str, dados: bytes, mime: str, tecnica: str | None = None) -> dict:
+    """Envia um arquivo para a base; o Dify processa em segundo plano (acompanhar pelo batch)."""
+    config = {"process_rule": {"mode": "automatic"}, "doc_form": "text_model", "doc_language": "Portuguese"}
+    if tecnica:
+        config["indexing_technique"] = tecnica
+    r = await _cliente_compartilhado().post(
+        f"/datasets/{dataset_id}/document/create-by-file", headers=_auth(_ds()), timeout=120,
+        files={"file": (nome, dados, mime)}, data={"data": json.dumps(config)})
+    if r.status_code >= 400:
+        raise _erro(r)
+    return r.json()
+
+
+async def documento_status_processamento(dataset_id: str, batch: str) -> dict:
+    r = await _get(_ds(), f"/datasets/{dataset_id}/documents/{batch}/indexing-status", {})
+    dados = r.get("data") or [{}]
+    return dados[0]
+
+
+async def documento_trechos(dataset_id: str, documento_id: str, pagina: int = 1, limite: int = 100) -> dict:
+    return await _get(_ds(), f"/datasets/{dataset_id}/documents/{documento_id}/segments",
+                      {"page": pagina, "limit": limite})
+
+
+async def documento_apagar(dataset_id: str, documento_id: str) -> None:
+    r = await _cliente_compartilhado().delete(f"/datasets/{dataset_id}/documents/{documento_id}", headers=_auth(_ds()))
+    if r.status_code >= 400 and r.status_code != 404:  # já apagado no Dify: segue
+        raise _erro(r)
+
+
+async def documento_mudar_status(dataset_id: str, documento_id: str, acao: str) -> None:
+    """acao: enable ou disable (o documento desativado não é consultado pelos agentes)."""
+    await _send(_ds(), "PATCH", f"/datasets/{dataset_id}/documents/status/{acao}", {"document_ids": [documento_id]})
+
+
+async def documento_baixar(dataset_id: str, documento_id: str) -> tuple[bytes, str]:
+    """O Dify devolve um link assinado do arquivo; o servidor baixa e repassa (o navegador não fala com o Dify)."""
+    r = await _get(_ds(), f"/datasets/{dataset_id}/documents/{documento_id}/download", {})
+    arq = await _cliente_compartilhado().get(r["url"], timeout=120, follow_redirects=True)
+    if arq.status_code >= 400:
+        raise DifyErro(arq.status_code, "Não foi possível baixar o arquivo do Dify.")
+    return arq.content, arq.headers.get("content-type", "application/octet-stream")

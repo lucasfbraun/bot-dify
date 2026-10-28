@@ -9,6 +9,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Registros com filtros**: logins (ok, senha errada, sem liberação, conta desabilitada, bloqueio) e uso dos agentes (perguntas, erros, áudios), filtráveis por usuário, agente, tipo e período.
 - **Conversas de todos os usuários**: o administrador lê qualquer conversa de qualquer agente e exporta em TXT a conversa aberta, as selecionadas ou todas as do filtro.
 - **Chat com streaming**: seletor de agente na barra lateral (e atalhos na tela inicial), histórico separado por agente, status do que o agente está fazendo (consultando o Qlik, buscando certificados etc.), renomear/apagar, copiar e avaliar (👍/👎 vão para os registros do Dify).
+- **Envio de conhecimento com aprovação**: o usuário envia um arquivo (PDF, Office, apresentações, planilhas, imagens) para um agente aprender. O arquivo passa por leitura máxima (conversão para PDF e OCR), fica em quarentena, recebe alertas automáticos (instruções suspeitas, dados pessoais, pouco texto) e só entra na base do agente depois da aprovação de um aprovador daquele agente. Só administradores desativam ou excluem um conhecimento aprovado.
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
@@ -17,9 +18,11 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 
 ```
 backend/app/        FastAPI: login LDAP, cadastro de usuários e agentes (SQLite em /data), proxy da API do Dify
+  conhecimento.py   envio de conhecimento com aprovação (validação, quarentena, alertas, decisões, registros)
+conversor/          container isolado: LibreOffice (Office -> PDF) + OCRmyPDF/Tesseract (OCR português/inglês)
 frontend/           PWA (HTML/CSS/JS sem build), ícones e logo
 deploy/             exemplo de configuração do nginx (HTTPS + streaming)
-tests/              AD falso, Dify falso (vários apps), testes da API, da migração e da interface
+tests/              AD/Dify/conversor falsos e testes da API, da migração, da interface e do conversor real
 Dockerfile, docker-compose.yml, .env.example
 ```
 
@@ -69,8 +72,7 @@ Junta dois tipos de evento numa lista só, do mais novo para o mais antigo:
 
 Filtros disponíveis:
 
-- **Usuário**: aceita `nome.sobrenome`, `FLEXIVEL
-ome.sobrenome` ou `nome.sobrenome@flexivel.local`, com sugestões dos cadastrados.
+- **Usuário**: aceita `nome.sobrenome`, `FLEXIVEL\nome.sobrenome` ou `nome.sobrenome@flexivel.local`, com sugestões dos cadastrados.
 - **Agente**.
 - **Tipo**: logins e uso, só logins ou só uso.
 - **Período (De / Até)**: começa nos últimos 7 dias.
@@ -103,6 +105,103 @@ Detalhes que valem saber:
 - **Privacidade (LGPD)**: os usuários devem saber que as conversas podem ser lidas pela administração. Vale incluir isso na política interna de uso.
 - **De onde vêm as conversas**: o Dify só lista conversas por usuário, então a plataforma consulta cada combinação de usuário e agente. Entram os usuários cadastrados e também quem já foi removido mas usou algum agente a partir desta versão. Conversas feitas fora desta plataforma (por exemplo, no WebApp do Dify) não aparecem.
 - Ao consultar um usuário num agente que ele nunca usou, o Dify cria um registro de usuário final vazio para o app. Isso não aparece nos logs do Dify e não afeta nada.
+
+## Envio de conhecimento com aprovação
+
+Os usuários enviam arquivos para os agentes aprenderem, mas **nada entra na base de um agente sem a aprovação de um aprovador daquele agente**.
+
+### Como funciona
+
+```
+Usuário envia arquivo ──► validação (tipo real, tamanho, macros, bomba de compressão)
+                     ──► conversor isolado: PDF + OCR quando preciso (máxima extração)
+                     ──► QUARENTENA no Dify (base que nenhum agente consulta; modo econômico, sem custo de IA)
+                     ──► alertas automáticos (instruções suspeitas, dados pessoais, pouco texto)
+                     ──► aprovador analisa: arquivo, trechos como o Dify leu, alertas
+                           ├─ Aprovar ──► arquivo vai para a base "Colaborativo - <agente>" e sai da quarentena
+                           └─ Rejeitar (motivo obrigatório) ──► sai da quarentena; quem enviou vê o motivo
+```
+
+### Máxima extração do conteúdo
+
+O Dify lê só texto digital. Para não perder o que está em imagens, o conversor (container `conversor`, com LibreOffice e Tesseract) trata cada tipo de arquivo assim:
+
+| Arquivo | Tratamento |
+|---|---|
+| PDF digital | OCR só nas partes que são imagem (prints, tabelas escaneadas); o texto digital é mantido |
+| PDF escaneado, JPG, PNG | OCR completo (português + inglês) |
+| PPT, PPTX, DOC, RTF, ODT | Conversão para PDF + OCR das imagens dos slides/páginas |
+| DOCX **com imagens** | Conversão para PDF + OCR (para não perder o texto das figuras) |
+| DOCX sem imagens, XLSX, XLS, CSV, TXT, MD | Direto para o Dify, que preserva melhor tabelas, linhas e colunas |
+
+Depois que o Dify processa, a plataforma conta quanto texto saiu e avisa o aprovador quando veio pouco.
+
+### Papéis e permissões
+
+| Ação | Quem enviou | Aprovador do agente | Administrador |
+|---|---|---|---|
+| Enviar arquivo | Quem tem acesso ao agente | ✅ | ✅ |
+| Ver os próprios envios e o motivo da rejeição | ✅ | ✅ | ✅ |
+| Cancelar enquanto está pendente | ✅ (só o próprio) | — | — |
+| Ver a fila e analisar | ❌ | Agentes que aprova | Todos (só vê) |
+| Aprovar ou rejeitar | ❌ | Agentes que aprova | Só se for marcado como aprovador |
+| Aprovar **o próprio** envio | — | Se o agente permitir autoaprovação (fica marcado "Autoaprovado") | Idem |
+| Ver os conhecimentos aprovados | Os próprios | Agentes que aprova | Todos |
+| Desativar, reativar ou excluir um aprovado | ❌ | ❌ | ✅ (com motivo) |
+| Ver os registros de aprovação | ❌ | Agentes que aprova | Todos |
+
+- **Desativar**: o documento continua na base, mas o agente para de consultá-lo na hora; dá para reativar.
+- **Excluir**: apaga o documento da base no Dify; não tem volta.
+- Desativar, reativar, excluir e rejeitar exigem **motivo**, que fica no registro.
+
+### Configurar (uma vez)
+
+1. **Chave de conhecimento do Dify**: no Dify, abra **Conhecimento → API** (canto superior direito) → **Chave da API** → **Criar nova chave**. Na plataforma: **Administração → Agentes → Envio de conhecimento pelos usuários → Cadastrar chave**. A plataforma testa a chave antes de salvar; ela fica só no servidor e aparece mascarada.
+   - Use a **chave geral de conhecimento do workspace**. Chaves restritas a bases específicas não conseguem criar bases, e a plataforma precisa criar a base de cada agente e a quarentena.
+   - Também dá para usar `DIFY_DATASET_API_KEY` no `.env`; a chave cadastrada na tela tem prioridade.
+2. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"**. A plataforma cria no Dify a base **Colaborativo - Nome do agente** (alta qualidade, com embeddings) e, na primeira vez, a base **Quarentena - envios para aprovação** (modo econômico).
+3. **Ligar a base ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar → Colaborativo - Nome do agente** → **Publicar**. **Nunca** ligue a base de Quarentena a nenhum agente.
+4. **Marcar os aprovadores**: **Administração → Usuários → botão "Não aprova"/"Aprova: …"** na linha da pessoa → marque os agentes.
+5. **Autoaprovação**: no mesmo diálogo do agente, **"Permitir que o aprovador aprove o próprio envio"** (vem ligada). Desligada, o envio de um aprovador espera outro aprovador do mesmo agente.
+
+### Como usar
+
+- **Enviar** (menu do avatar → **Enviar conhecimento**): escolha o agente, o arquivo e escreva o que é o arquivo e por que o agente deve aprender com ele. A lista **Meus envios** mostra a situação de cada um e se atualiza sozinha enquanto o arquivo é processado.
+- **Aprovar** (menu → **Aprovações**, com o número de pendentes): abra o envio, leia os **alertas**, abra o arquivo (o PDF convertido mostra exatamente o que o agente vai ler) e confira os **trechos**. Depois, **Aprovar** (comentário opcional) ou **Rejeitar** (motivo obrigatório).
+- **Aprovados**: filtros de agente, quem enviou, situação (ativos, desativados, excluídos, rejeitados) e período. O arquivo aprovado é lido direto do Dify.
+- **Registros de aprovação**: filtros de agente, usuário (quem enviou ou quem decidiu), ação e período, com exportação **CSV** (abre no Excel). Exportar também fica na auditoria.
+
+### Alertas automáticos
+
+Os alertas **não bloqueiam** nada; servem para o aprovador olhar com atenção:
+
+- **Possíveis instruções para manipular o agente** (*prompt injection*): frases como "ignore as instruções anteriores", "revele o prompt", "você agora é…". Se entrarem na base, o agente pode obedecer. Os trechos aparecem no alerta.
+- **Dados pessoais ou sensíveis**: CPF e CNPJ (com dígito verificador conferido), e-mails, telefones e palavras como senha, token, salário. No alerta, os números aparecem mascarados.
+- **Pouco texto extraído**: o arquivo é quase todo imagem ou de baixa qualidade.
+- **OCR não aplicado**: o texto de imagens pode ter ficado de fora.
+
+### Segurança
+
+- **Quarentena**: o arquivo não entra em nenhuma base consultada por agente antes da aprovação.
+- **Conversor isolado**: container próprio, sem as chaves, sem acesso ao banco, sem internet (rede `internal` do Docker), sistema de arquivos só de leitura (`/tmp` em memória), sem privilégios (`cap_drop: ALL`, `no-new-privileges`), usuário sem root e com limite de memória, CPU e processos. Um arquivo malicioso que explore falha do LibreOffice não alcança nada importante.
+- **Validação do conteúdo real**: a extensão precisa bater com o conteúdo (PDF, ZIP do Office, OLE do Office antigo, PNG, JPEG, RTF); arquivos com macro e bombas de compressão são recusados. O nome do arquivo é limpo (sem pastas nem caracteres especiais).
+- **Arquivos abertos no navegador** vêm com `Content-Security-Policy: sandbox`: mesmo um PDF ou TXT malicioso não roda script nem acessa a sessão.
+- **Duplicados**: o mesmo arquivo (mesmo SHA-256) não pode ser enviado de novo para o mesmo agente enquanto estiver pendente ou aprovado.
+- **Limite de envios**: 30 por pessoa por hora (`CONHECIMENTO_ENVIOS_POR_HORA`).
+- **Arquivos locais só até a decisão**: depois de aprovado, rejeitado ou cancelado, a cópia no servidor é apagada; o registro guarda o SHA-256. O arquivo aprovado continua no Dify.
+- **Dois aprovadores ao mesmo tempo**: a troca de situação é atômica; o segundo recebe "outro aprovador acabou de decidir".
+- **Reinício do container**: envios que estavam sendo processados são retomados na subida; aprovações interrompidas voltam para a fila.
+
+### Configurações (`.env`)
+
+| Variável | Padrão | Para quê |
+|---|---|---|
+| `CONHECIMENTO_MAX_MB` | `15` | Tamanho máximo do arquivo. O Dify aceita 15 MB por padrão (`UPLOAD_FILE_SIZE_LIMIT` no Dify); acima disso, aumente lá também e no nginx (`client_max_body_size`). |
+| `DIFY_DATASET_API_KEY` | vazio | Alternativa à chave cadastrada na tela. |
+| `CONVERSOR_URL` | `http://conversor:8000` (no compose) | Endereço do conversor. Vazio = sem conversão (PPT, DOC e imagens ficam indisponíveis; PDF vai sem OCR). |
+| `CONHECIMENTO_ENVIOS_POR_HORA` | `30` | Limite de envios por pessoa. |
+
+O conversor aceita `OCR_IDIOMAS` (padrão `por+eng`), `CONVERSOES_SIMULTANEAS` (padrão `2`), `CONVERSOR_TIMEOUT_OFFICE` (180 s) e `CONVERSOR_TIMEOUT_OCR` (900 s).
 
 ## Perguntas por áudio
 
@@ -177,6 +276,13 @@ cd /opt/agente-pu-web && git pull && docker compose up -d --build
 
 O `--build` é obrigatório: o frontend é copiado para dentro da imagem, então só o `git pull` não muda o que o navegador recebe. O cadastro de usuários, os agentes e o registro de acessos ficam no volume `agente-pu-dados` e não se perdem ao atualizar. Não use `docker compose down -v`, porque o `-v` apaga esse volume.
 
+#### Atualizando para a versão com envio de conhecimento
+
+1. `cd /opt/agente-pu-web && git pull && docker compose up -d --build`. Esta versão traz um segundo container, `agente-pu-conversor` (LibreOffice + OCR). A primeira construção dele baixa uns 600 MB de pacotes e leva alguns minutos; a imagem fica com cerca de 1 GB. Confira com `docker compose ps`: devem aparecer `agente-pu-web` e `agente-pu-conversor`, os dois `healthy`.
+2. **nginx**: troque `client_max_body_size` para `16m` (arquivos de até 15 MB) e recarregue (`sudo nginx -t && sudo systemctl reload nginx`, ou `docker compose restart nginx` na pasta `dify/docker` se for o nginx do Dify).
+3. O banco é atualizado sozinho na subida: as tabelas novas são criadas e os agentes ganham as opções de conhecimento, desligadas até você ligar.
+4. Siga [Configurar (uma vez)](#configurar-uma-vez): cadastre a chave de conhecimento, ligue o recebimento nos agentes, ligue a base Colaborativo ao agente no Dify e marque os aprovadores.
+
 #### Atualizando para a versão com áudio
 
 Além do `git pull` e do `docker compose up -d --build`, aumente o tamanho máximo de upload no nginx que faz o HTTPS:
@@ -206,6 +312,17 @@ python tests/test_migracao.py         # não precisa do servidor: atualização 
 pip install playwright && python tests/test_ui.py   # interface no Chrome, com microfone simulado (prints em tests/prints/)
 ```
 
+O `dev_server.py` sobe também um **conversor falso** (porta 8098), que devolve um "PDF" de mentira com texto. O **conversor de verdade** (LibreOffice + OCR) tem teste próprio, que roda no Docker com as mesmas restrições de produção. Ele gera na hora uma imagem com texto, um PDF escaneado, um PPTX e um PPT com texto e print, e um DOCX com figura, e confere se o PDF devolvido traz o texto digital **e** o texto das imagens:
+
+```bash
+docker build -t agente-pu-conversor:teste conversor
+docker run -d --name conversor-teste --read-only --tmpfs /tmp:size=1g --cap-drop ALL \
+    --security-opt no-new-privileges --memory 2g --pids-limit 256 -p 127.0.0.1:8097:8000 agente-pu-conversor:teste
+pip install python-pptx python-docx pypdfium2 pillow
+python tests/test_conversor.py
+docker rm -f conversor-teste && docker image rm agente-pu-conversor:teste   # a imagem tem ~1 GB
+```
+
 O Dify falso pagina como o de verdade (100 conversas por página; mensagens das mais novas para as mais antigas) e tem uma rota só de teste (`POST /teste/conversa`) que cria conversas com datas no passado e muitas mensagens. Com ela, os testes conferem a paginação (121 conversas; uma conversa com 250 mensagens) e os filtros por data.
 
 `test_api.py` e `test_ui.py` esperam um servidor recém-iniciado: reinicie o `dev_server.py` entre um e outro.
@@ -215,6 +332,8 @@ O Dify falso tem três apps:
 - **Agente Técnico PU(qlik)**: agente com ferramentas e voz para texto ligada. A chave dele é a `DIFY_API_KEY` padrão, então vira o primeiro agente na subida. A "transcrição" falsa devolve a duração e o formato do WAV recebido, o que permite conferir a conversão feita no navegador.
 - **Agente Comercial**: chatflow sem ferramentas e sem voz para texto, com a chave `app-Comercial0000000000000`.
 - **Fluxo de relatórios**: workflow que deve ser recusado no cadastro, com a chave `app-Fluxo00000000000000000`.
+
+Ele também imita a API de conhecimento: bases, envio de arquivo com processamento assíncrono, trechos paginados, ativar e desativar, apagar e download. A chave de conhecimento é `dataset-Conhecimento00000000`; a `dataset-Restrita0000000000000` simula uma chave restrita, que a plataforma deve recusar. Um arquivo com `ERRO` no nome simula falha de processamento no Dify.
 
 Usuários do AD falso, todos com a senha `Teste@123`:
 

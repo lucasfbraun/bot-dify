@@ -78,7 +78,63 @@ CREATE TABLE IF NOT EXISTS uso (
     detalhe          TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_uso_quando ON uso(quando);
+-- quem aprova conhecimento enviado para cada agente
+CREATE TABLE IF NOT EXISTS aprovadores (
+    username   TEXT NOT NULL REFERENCES usuarios(username) ON DELETE CASCADE,
+    agente_id  INTEGER NOT NULL REFERENCES agentes(id) ON DELETE CASCADE,
+    PRIMARY KEY (username, agente_id)
+);
+-- arquivos enviados para virar conhecimento (o arquivo em si fica no disco só até a decisão)
+CREATE TABLE IF NOT EXISTS envios (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    agente_id        INTEGER,                -- sem FK: o histórico fica mesmo se o agente for removido
+    agente_nome      TEXT,
+    dataset_id       TEXT,                   -- base de destino no momento do envio
+    username         TEXT NOT NULL,
+    arquivo_nome     TEXT NOT NULL,
+    arquivo_ext      TEXT NOT NULL,
+    tamanho          INTEGER NOT NULL,
+    sha256           TEXT NOT NULL,
+    justificativa    TEXT NOT NULL,
+    status           TEXT NOT NULL,          -- processando, pendente, erro, aprovado, rejeitado, cancelado, desativado, excluido
+    enviado_nome     TEXT,                   -- nome do arquivo que vai para o Dify (PDF quando convertido)
+    convertido       INTEGER NOT NULL DEFAULT 0,
+    ocr              TEXT,                   -- aplicado, parcial, falhou, nao_aplicavel
+    paginas          INTEGER,
+    caracteres       INTEGER,
+    trechos          INTEGER,
+    alertas          TEXT NOT NULL DEFAULT '[]',
+    quarentena_doc   TEXT,
+    destino_doc      TEXT,
+    destino_batch    TEXT,
+    erro             TEXT,
+    criado_em        TEXT NOT NULL,
+    decidido_por     TEXT,
+    decidido_em      TEXT,
+    motivo           TEXT,
+    autoaprovado     INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS ix_envios_status ON envios(status);
+-- registro de aprovação (enviado, processado, aprovado, rejeitado, cancelado, desativado, reativado, excluido, erro)
+CREATE TABLE IF NOT EXISTS eventos_conhecimento (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    envio_id   INTEGER NOT NULL,
+    quando     TEXT NOT NULL,
+    autor      TEXT NOT NULL,
+    acao       TEXT NOT NULL,
+    detalhe    TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_eventos_conh_quando ON eventos_conhecimento(quando);
 """
+
+# colunas acrescentadas em tabelas que já existiam em versões anteriores (o CREATE IF NOT EXISTS não as cria)
+COLUNAS_NOVAS = {
+    "agentes": {
+        "recebe_conhecimento": "INTEGER NOT NULL DEFAULT 0",
+        "autoaprovacao": "INTEGER NOT NULL DEFAULT 1",
+        "dataset_id": "TEXT",
+    },
+}
 
 
 def agora() -> str:
@@ -89,6 +145,11 @@ def init_db() -> None:
     os.makedirs(settings.DATA_DIR, exist_ok=True)
     with conn() as c:
         c.executescript(SCHEMA)
+        for tabela, colunas in COLUNAS_NOVAS.items():
+            existentes = {r[1] for r in c.execute(f"PRAGMA table_info({tabela})")}
+            for nome, tipo in colunas.items():
+                if nome not in existentes:
+                    c.execute(f"ALTER TABLE {tabela} ADD COLUMN {nome} {tipo}")
 
 
 @contextmanager
@@ -226,7 +287,8 @@ def auditar(autor: str, acao: str, alvo: str = "", detalhe: str = "") -> None:
 
 
 # ------------------------------------------------------------------ agentes
-CAMPOS_AGENTE = ("nome", "descricao", "icone", "cor", "modo", "chave", "sugestoes", "ativo")
+CAMPOS_AGENTE = ("nome", "descricao", "icone", "cor", "modo", "chave", "sugestoes", "ativo", "recebe_conhecimento",
+                 "autoaprovacao", "dataset_id")
 
 
 def _agente(r) -> dict | None:
@@ -290,6 +352,9 @@ def update_agente(agente_id: int, **campos) -> None:
         permitidos["sugestoes"] = json.dumps(permitidos["sugestoes"] or [], ensure_ascii=False)
     if "ativo" in permitidos:
         permitidos["ativo"] = int(bool(permitidos["ativo"]))
+    for k in ("recebe_conhecimento", "autoaprovacao"):
+        if k in permitidos:
+            permitidos[k] = int(bool(permitidos[k]))
     if not permitidos:
         return
     sets = ", ".join(f"{k} = ?" for k in permitidos)
@@ -347,3 +412,160 @@ def liberar_agente_para_todos(agente_id: int) -> int:
         cur = c.execute("INSERT OR IGNORE INTO usuario_agentes (username, agente_id) SELECT username, ? FROM usuarios",
                         (agente_id,))
         return cur.rowcount
+
+
+# ------------------------------------------------------------------ conhecimento (envios com aprovação)
+def _envio(r) -> dict | None:
+    if not r:
+        return None
+    e = dict(r)
+    try:
+        e["alertas"] = json.loads(e.get("alertas") or "[]")
+    except ValueError:
+        e["alertas"] = []
+    return e
+
+
+def aprovadores_por_usuario() -> dict[str, list[int]]:
+    with conn() as c:
+        out: dict[str, list[int]] = {}
+        for r in c.execute("SELECT username, agente_id FROM aprovadores ORDER BY agente_id"):
+            out.setdefault(r[0], []).append(r[1])
+        return out
+
+
+def agentes_que_aprova(username: str) -> list[int]:
+    with conn() as c:
+        return [r[0] for r in c.execute("SELECT agente_id FROM aprovadores WHERE username = ?", (username.lower(),))]
+
+
+def aprovadores_do_agente(agente_id: int) -> list[str]:
+    with conn() as c:
+        return [r[0] for r in c.execute(
+            "SELECT a.username FROM aprovadores a JOIN usuarios u ON u.username = a.username "
+            "WHERE a.agente_id = ? AND u.ativo = 1 ORDER BY 1", (agente_id,))]
+
+
+def definir_aprovacoes(username: str, agente_ids: list[int]) -> list[int]:
+    with conn() as c:
+        validos = {r[0] for r in c.execute("SELECT id FROM agentes")}
+        ids = sorted({int(i) for i in agente_ids} & validos)
+        c.execute("DELETE FROM aprovadores WHERE username = ?", (username.lower(),))
+        c.executemany("INSERT INTO aprovadores (username, agente_id) VALUES (?, ?)", [(username.lower(), i) for i in ids])
+        return ids
+
+
+def criar_envio(**campos) -> int:
+    campos = {**campos, "criado_em": agora(), "alertas": json.dumps(campos.get("alertas") or [], ensure_ascii=False)}
+    cols = ", ".join(campos)
+    with conn() as c:
+        return c.execute(f"INSERT INTO envios ({cols}) VALUES ({', '.join('?' * len(campos))})",
+                         tuple(campos.values())).lastrowid
+
+
+CAMPOS_ENVIO = {"status", "enviado_nome", "convertido", "ocr", "paginas", "caracteres", "trechos", "alertas",
+                "quarentena_doc", "destino_doc", "destino_batch", "erro", "decidido_por", "decidido_em", "motivo",
+                "autoaprovado"}
+
+
+def atualizar_envio(envio_id: int, **campos) -> None:
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_ENVIO}
+    if "alertas" in campos:
+        campos["alertas"] = json.dumps(campos["alertas"] or [], ensure_ascii=False)
+    if not campos:
+        return
+    with conn() as c:
+        c.execute(f"UPDATE envios SET {', '.join(f'{k} = ?' for k in campos)} WHERE id = ?", (*campos.values(), envio_id))
+
+
+def mudar_status_envio(envio_id: int, de: tuple[str, ...], para: str, **campos) -> bool:
+    """Troca o status só se ele ainda estiver em `de` (evita dois aprovadores decidindo o mesmo envio)."""
+    campos = {k: v for k, v in campos.items() if k in CAMPOS_ENVIO}
+    if "alertas" in campos:
+        campos["alertas"] = json.dumps(campos["alertas"] or [], ensure_ascii=False)
+    sets = ", ".join(["status = ?"] + [f"{k} = ?" for k in campos])
+    with conn() as c:
+        cur = c.execute(f"UPDATE envios SET {sets} WHERE id = ? AND status IN ({', '.join('?' * len(de))})",
+                        (para, *campos.values(), envio_id, *de))
+        return cur.rowcount == 1
+
+
+def get_envio(envio_id: int) -> dict | None:
+    with conn() as c:
+        return _envio(c.execute("SELECT * FROM envios WHERE id = ?", (envio_id,)).fetchone())
+
+
+def listar_envios(status: list[str] | None = None, agente_ids: list[int] | None = None, username: str | None = None,
+                  inicio: str | None = None, fim: str | None = None, limite: int = 500) -> list[dict]:
+    """agente_ids=None: todos os agentes; lista vazia: nenhum (aprovador sem agentes)."""
+    cond, args = [], []
+    if status:
+        cond.append(f"status IN ({', '.join('?' * len(status))})")
+        args += status
+    if agente_ids is not None:
+        if not agente_ids:
+            return []
+        cond.append(f"agente_id IN ({', '.join('?' * len(agente_ids))})")
+        args += agente_ids
+    if username:
+        cond.append("username = ?")
+        args.append(username.lower())
+    if inicio:
+        cond.append("criado_em >= ?")
+        args.append(inicio)
+    if fim:
+        cond.append("criado_em <= ?")
+        args.append(fim)
+    where = (" WHERE " + " AND ".join(cond)) if cond else ""
+    with conn() as c:
+        return [_envio(r) for r in c.execute(f"SELECT * FROM envios{where} ORDER BY id DESC LIMIT ?", (*args, limite))]
+
+
+def registrar_evento(envio_id: int, autor: str, acao: str, detalhe: str = "") -> None:
+    with conn() as c:
+        c.execute("INSERT INTO eventos_conhecimento (envio_id, quando, autor, acao, detalhe) VALUES (?,?,?,?,?)",
+                  (envio_id, agora(), autor, acao, (detalhe or "")[:1000]))
+
+
+def eventos_do_envio(envio_id: int) -> list[dict]:
+    with conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM eventos_conhecimento WHERE envio_id = ? ORDER BY id",
+                                           (envio_id,))]
+
+
+def listar_eventos_conhecimento(agente_ids: list[int] | None = None, usuario: str | None = None,
+                                agente_id: int | None = None, inicio: str | None = None, fim: str | None = None,
+                                acao: str | None = None, autoaprovado: bool | None = None,
+                                limite: int = 2000) -> tuple[list[dict], bool]:
+    """Registro de aprovação com os dados do envio. `usuario` casa com quem enviou OU com quem fez a ação."""
+    cond, args = [], []
+    if agente_ids is not None:
+        if not agente_ids:
+            return [], False
+        cond.append(f"e.agente_id IN ({', '.join('?' * len(agente_ids))})")
+        args += agente_ids
+    if agente_id:
+        cond.append("e.agente_id = ?")
+        args.append(agente_id)
+    if usuario:
+        cond.append("(e.username = ? OR v.autor = ?)")
+        args += [usuario.lower(), usuario.lower()]
+    if inicio:
+        cond.append("v.quando >= ?")
+        args.append(inicio)
+    if fim:
+        cond.append("v.quando <= ?")
+        args.append(fim)
+    if acao:
+        cond.append("v.acao = ?")
+        args.append(acao)
+    if autoaprovado is not None:
+        cond.append("e.autoaprovado = ?")
+        args.append(int(autoaprovado))
+    where = (" WHERE " + " AND ".join(cond)) if cond else ""
+    sql = (f"SELECT v.id, v.envio_id, v.quando, v.autor, v.acao, v.detalhe, e.agente_id, e.agente_nome, e.username, "
+           f"e.arquivo_nome, e.status, e.autoaprovado, e.sha256 FROM eventos_conhecimento v "
+           f"JOIN envios e ON e.id = v.envio_id{where} ORDER BY v.id DESC LIMIT ?")
+    with conn() as c:
+        itens = [dict(r) for r in c.execute(sql, (*args, limite + 1))]
+    return itens[:limite], len(itens) > limite

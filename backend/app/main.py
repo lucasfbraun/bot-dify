@@ -6,8 +6,7 @@ import os
 import re
 import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from datetime import datetime
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -15,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import db, dify, ldap_auth
+from . import conhecimento, db, dify, ldap_auth, tempo
 from .config import settings
 from .security import (checar_csrf, criar_token, definir_cookie, exigir_admin, limite_login, limpar_cookie,
                        usuario_atual)
@@ -67,6 +66,7 @@ async def _migrar_agente_unico():
 async def _ciclo(_app):
     db.init_db()
     await _migrar_agente_unico()
+    conhecimento.retomar()  # envios que ficaram no meio por reinício do container
     if not db.list_agentes():
         log.warning("Nenhum agente cadastrado: cadastre em Administração > Agentes.")
     if not os.getenv("SECRET_KEY"):
@@ -77,6 +77,7 @@ async def _ciclo(_app):
 
 app = FastAPI(title=settings.APP_NAME, docs_url=None, redoc_url=None, openapi_url=None,
               dependencies=[Depends(checar_csrf)], lifespan=_ciclo)
+app.include_router(conhecimento.router)
 
 
 @app.middleware("http")
@@ -531,7 +532,8 @@ def _usuario_admin(u: dict, mapa: dict[str, list[int]] | None = None) -> dict:
 @app.get("/api/admin/usuarios")
 def admin_listar(admin: dict = Depends(exigir_admin)):
     mapa = db.ids_agentes_por_usuario()
-    return {"itens": [_usuario_admin(u, mapa) for u in db.list_users()]}
+    aprova = db.aprovadores_por_usuario()
+    return {"itens": [{**_usuario_admin(u, mapa), "aprova": aprova.get(u["username"], [])} for u in db.list_users()]}
 
 
 @app.get("/api/admin/ad")
@@ -615,28 +617,12 @@ def admin_acessos(admin: dict = Depends(exigir_admin)):
 
 
 # ------------------------------------------------------------------ administração: registros e conversas
-try:
-    FUSO = ZoneInfo(settings.FUSO_HORARIO)
-except (ZoneInfoNotFoundError, ValueError):  # imagem sem base de fusos: Brasília não tem horário de verão desde 2019
-    FUSO = timezone(timedelta(hours=-3))
 RX_USUARIO = re.compile(r"[a-z0-9._\-]{1,64}")
 _sem_dify = asyncio.Semaphore(6)  # no máximo 6 chamadas simultâneas ao Dify ao varrer conversas
 
 
-def _periodo(inicio: str | None, fim: str | None) -> tuple[datetime | None, datetime | None]:
-    """Datas AAAA-MM-DD no fuso da empresa -> início do primeiro dia e fim do último dia (com fuso)."""
-    try:
-        ini = datetime.strptime(inicio, "%Y-%m-%d").replace(tzinfo=FUSO) if inicio else None
-        f = datetime.strptime(fim, "%Y-%m-%d").replace(tzinfo=FUSO) + timedelta(days=1, microseconds=-1) if fim else None
-    except ValueError:
-        raise HTTPException(400, "Data inválida (use AAAA-MM-DD).")
-    if ini and f and ini > f:
-        raise HTTPException(400, "A data inicial é depois da data final.")
-    return ini, f
-
-
-def _iso_utc(d: datetime | None) -> str | None:
-    return d.astimezone(timezone.utc).isoformat(timespec="seconds") if d else None
+_periodo = tempo.periodo
+_iso_utc = tempo.iso_utc
 
 
 def _usuario_param(usuario: str | None) -> str | None:
@@ -765,8 +751,7 @@ class ExportarIn(BaseModel):
     filtro: FiltroConversas | None = None
 
 
-def _hora(ts: float | None) -> str:
-    return datetime.fromtimestamp(ts, FUSO).strftime("%d/%m/%Y %H:%M") if ts else "—"
+_hora = tempo.hora
 
 
 def _txt_conversa(meta: dict, mensagens: list[dict]) -> str:
@@ -824,7 +809,7 @@ async def admin_exportar(dados: ExportarIn, admin: dict = Depends(exigir_admin))
             return _txt_conversa(ref, []) + f"(não foi possível ler esta conversa no Dify: {e.mensagem})\r\n"
 
     blocos = await asyncio.gather(*[uma(r) for r in refs])
-    agora = datetime.now(FUSO)
+    agora = datetime.now(tempo.FUSO)
     cabecalho = (f"Exportação de conversas · {settings.APP_NAME}\r\nGerada em {agora:%d/%m/%Y %H:%M} por "
                  f"{admin['username']} · {len(refs)} conversa(s)\r\n\r\n")
     db.auditar(admin["username"], "exportar_conversas", "", f"{len(refs)} conversa(s): {descricao}")
@@ -850,6 +835,8 @@ class AlterarAgenteIn(BaseModel):
     sugestoes: list[SugestaoIn] | None = Field(default=None, max_length=12)
     ativo: bool | None = None
     chave: str | None = Field(default=None, max_length=200)
+    recebe_conhecimento: bool | None = None   # usuários podem enviar arquivos (com aprovação) para este agente
+    autoaprovacao: bool | None = None         # aprovador pode aprovar o próprio envio
 
 
 def _mascarar(chave: str) -> str:
@@ -859,6 +846,7 @@ def _mascarar(chave: str) -> str:
 def _agente_admin(a: dict) -> dict:
     out = {k: v for k, v in a.items() if k != "chave"}
     out["chave_mascarada"] = _mascarar(a["chave"])
+    out["aprovadores"] = db.aprovadores_do_agente(a["id"])
     return out
 
 
@@ -918,6 +906,12 @@ async def admin_alterar_agente(agente_id: int, dados: AlterarAgenteIn, admin: di
         campos["sugestoes"] = [{"cat": s.cat.strip(), "txt": s.txt.strip()} for s in dados.sugestoes if s.txt.strip()]
     if dados.ativo is not None:
         campos["ativo"] = dados.ativo
+    if dados.autoaprovacao is not None:
+        campos["autoaprovacao"] = dados.autoaprovacao
+    if dados.recebe_conhecimento is not None:
+        if dados.recebe_conhecimento and not atual.get("dataset_id"):
+            campos["dataset_id"] = await conhecimento.preparar_agente(atual)  # cria a base colaborativa no Dify
+        campos["recebe_conhecimento"] = dados.recebe_conhecimento
     db.update_agente(agente_id, **campos)
     _cache_params.pop(agente_id, None)
     resumo = {k: ("(nova chave)" if k == "chave" else v) for k, v in campos.items() if k not in ("icone", "cor", "modo")}

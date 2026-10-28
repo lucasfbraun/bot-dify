@@ -138,5 +138,29 @@ with TestClient(app) as c:
        "admin cadastra o primeiro agente e já pode usar")
 ok(db.get_meta("migracao_agentes") is not None, "migração marcada como feita")
 
+print("== banco da versão com vários agentes (sem as colunas de conhecimento)")
+db.DB_PATH = os.path.join(DATA_DIR, "v2.db")
+c = sqlite3.connect(db.DB_PATH)
+c.executescript(SCHEMA_ANTIGO + """
+CREATE TABLE agentes (id INTEGER PRIMARY KEY AUTOINCREMENT, nome TEXT NOT NULL, descricao TEXT NOT NULL DEFAULT '',
+    icone TEXT NOT NULL DEFAULT '', cor TEXT NOT NULL DEFAULT '', modo TEXT NOT NULL DEFAULT '', chave TEXT NOT NULL UNIQUE,
+    sugestoes TEXT NOT NULL DEFAULT '[]', ativo INTEGER NOT NULL DEFAULT 1, criado_em TEXT NOT NULL, criado_por TEXT);
+CREATE TABLE usuario_agentes (username TEXT NOT NULL, agente_id INTEGER NOT NULL, PRIMARY KEY (username, agente_id));
+CREATE TABLE meta (chave TEXT PRIMARY KEY, valor TEXT);
+""")
+c.execute("INSERT INTO usuarios (username, nome, perfil, ativo, criado_em) VALUES ('admin.ti','Admin','admin',1,'2026-10-01')")
+c.execute("INSERT INTO agentes (nome, chave, criado_em) VALUES ('Agente Comercial', ?, '2026-10-01')", (fake_dify.CHAVE_COMERCIAL,))
+c.execute("INSERT INTO usuario_agentes VALUES ('admin.ti', 1)")
+c.execute("INSERT INTO meta VALUES ('migracao_agentes', '2026-10-01')")
+c.commit()
+c.close()
+with TestClient(app) as c:
+    entrar(c, "admin.ti")
+    a = c.get("/api/admin/agentes").json()["itens"]
+    ok(len(a) == 1 and a[0]["recebe_conhecimento"] == 0 and a[0]["autoaprovacao"] == 1 and a[0]["dataset_id"] is None,
+       "colunas novas acrescentadas (não recebe conhecimento até ligar; autoaprovação ligada)")
+    ok([x["id"] for x in c.get("/api/agentes").json()["itens"]] == [1], "agente e liberações antigas intactos")
+    ok(c.get("/api/conhecimento/meus").json()["itens"] == [], "tabelas de conhecimento criadas")
+
 print("\nfalhas:", falhas)
 sys.exit(1 if falhas else 0)
