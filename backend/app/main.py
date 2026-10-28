@@ -236,7 +236,9 @@ def agente_permitido(aid: int, user: dict = Depends(usuario_atual)) -> dict:
 
 
 def _agente_publico(a: dict) -> dict:
-    return {k: a[k] for k in ("id", "nome", "descricao", "icone", "cor")}
+    # recebe_conhecimento: o chat oferece mandar respostas avaliadas (👍/👎 com correção) para aprovação
+    return {**{k: a[k] for k in ("id", "nome", "descricao", "icone", "cor")},
+            "recebe_conhecimento": conhecimento.agente_recebe(a)}
 
 
 @app.get("/api/agentes")
@@ -337,6 +339,7 @@ async def apagar_conversa(cid: str, ag: dict = Depends(agente_permitido), user: 
 class FeedbackIn(BaseModel):
     avaliacao: str | None = Field(default=None, pattern="^(like|dislike)$")
     comentario: str = Field(default="", max_length=1000)
+    conversation_id: str | None = None   # para buscar a pergunta/resposta no Dify quando o 👍 vira conhecimento
 
 
 @app.post("/api/agentes/{aid}/mensagens/{mid}/feedback")
@@ -346,7 +349,17 @@ async def avaliar(mid: str, dados: FeedbackIn, ag: dict = Depends(agente_permiti
         await dify.feedback(ag["chave"], user["username"], _id(mid), dados.avaliacao, dados.comentario)
     except dify.DifyErro as e:
         raise _erro_dify(e)
-    return {"ok": True}
+    # 👍 num agente que recebe conhecimento: a resposta vai para aprovação. Falha aqui não desfaz o 👍 no Dify.
+    envio, aviso = None, ""
+    try:
+        cid = dados.conversation_id if dados.conversation_id and RX_ID.fullmatch(dados.conversation_id) else None
+        envio = await conhecimento.feedback_no_chat(ag, user, mid, cid, dados.avaliacao, dados.comentario)
+    except HTTPException as e:
+        aviso = str(e.detail)
+    except (dify.DifyErro, httpx.HTTPError) as e:
+        log.warning("feedback não virou envio: %s", e)
+        aviso = "A avaliação foi registrada, mas não foi possível mandar a resposta para aprovação agora."
+    return {"ok": True, "envio": envio, "aviso": aviso}
 
 
 @app.post("/api/agentes/{aid}/chat/{task_id}/parar")
@@ -920,8 +933,9 @@ async def admin_alterar_agente(agente_id: int, dados: AlterarAgenteIn, admin: di
 
 
 @app.delete("/api/admin/agentes/{agente_id}")
-def admin_remover_agente(agente_id: int, admin: dict = Depends(exigir_admin)):
+async def admin_remover_agente(agente_id: int, admin: dict = Depends(exigir_admin)):
     a = _agente_ou_404(agente_id)
+    await conhecimento.cancelar_envios_do_agente(agente_id, admin["username"])
     db.delete_agente(agente_id)
     _cache_params.pop(agente_id, None)
     db.auditar(admin["username"], "remover_agente", str(agente_id), a["nome"])

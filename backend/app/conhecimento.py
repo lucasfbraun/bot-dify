@@ -184,9 +184,9 @@ def analisar(textos: list[str], info: dict) -> tuple[list[dict], int]:
     # vários padrões pegam a mesma frase: agrupa ocorrências próximas para mostrar cada trecho uma vez
     ocorrencias = sorted((m for rx in _INJECAO for m in rx.finditer(tudo)), key=lambda m: m.start())
     achados: list[str] = []
-    fim_anterior = -1
+    fim_anterior: int | None = None
     for m in ocorrencias:
-        if m.start() <= fim_anterior + 120:
+        if fim_anterior is not None and m.start() <= fim_anterior + 120:
             continue
         achados.append(_trecho(tudo, m))
         fim_anterior = m.end()
@@ -452,7 +452,8 @@ def _publico(e: dict, user: dict, aprova: list[int] | None = None) -> dict:
     pode_decidir = e["status"] == "pendente" and e["agente_id"] in aprova and (not proprio or bool(ag and ag["autoaprovacao"]))
     campos = ("id", "agente_id", "agente_nome", "username", "arquivo_nome", "arquivo_ext", "tamanho", "sha256",
               "justificativa", "status", "enviado_nome", "convertido", "ocr", "paginas", "caracteres", "trechos",
-              "alertas", "erro", "criado_em", "decidido_por", "decidido_em", "motivo", "autoaprovado")
+              "alertas", "erro", "criado_em", "decidido_por", "decidido_em", "motivo", "autoaprovado", "origem",
+              "message_id", "pergunta", "resposta_original", "resposta_corrigida")
     return {**{k: e.get(k) for k in campos}, "pode_decidir": pode_decidir,
             "pode_cancelar": proprio and e["status"] in STATUS_ABERTOS,
             "pode_administrar": _admin(user) and e["status"] in ("aprovado", "desativado")}
@@ -548,19 +549,21 @@ STATUS_VALIDOS = {"processando", "pendente", "publicando", "erro", "aprovado", "
 
 @router.get("/api/conhecimento/envios")
 def listar(status: str | None = None, agente: int | None = None, usuario: str | None = None, inicio: str | None = None,
-           fim: str | None = None, user: dict = Depends(usuario_atual)):
+           fim: str | None = None, origem: str | None = None, user: dict = Depends(usuario_atual)):
     visiveis = _agentes_visiveis(user)
     if visiveis is not None and not visiveis:
         raise HTTPException(403, "Você não é aprovador de nenhum agente.")
     lista_status = [s for s in (status or "").split(",") if s]
     if any(s not in STATUS_VALIDOS for s in lista_status):
         raise HTTPException(400, "Situação inválida.")
+    if origem and origem not in ORIGENS:
+        raise HTTPException(400, "Tipo inválido.")
     if agente:
         visiveis = [agente] if visiveis is None or agente in visiveis else []
     ini, f = tempo.periodo(inicio, fim)
     u = ldap_auth.normalizar_usuario(usuario) if usuario else None
     aprova = db.agentes_que_aprova(user["username"])
-    itens = db.listar_envios(lista_status or None, visiveis, u, tempo.iso_utc(ini), tempo.iso_utc(f), 1000)
+    itens = db.listar_envios(lista_status or None, visiveis, u, tempo.iso_utc(ini), tempo.iso_utc(f), 1000, origem)
     return {"itens": [_publico(e, user, aprova) for e in itens]}
 
 
@@ -630,6 +633,8 @@ async def arquivo(envio_id: int, qual: str = "enviado", user: dict = Depends(usu
 
 class DecisaoIn(BaseModel):
     motivo: str = Field(default="", max_length=1000)
+    # 👎: resposta correta que entra na base (obrigatória se quem avaliou não escreveu; o aprovador pode ajustar)
+    resposta_corrigida: str | None = Field(default=None, max_length=8000)
 
 
 async def _tirar_da_quarentena(e: dict) -> None:
@@ -654,14 +659,26 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
         raise HTTPException(409, "Este envio não está aguardando aprovação.")
     if not ag or not ag.get("dataset_id") or not ag.get("recebe_conhecimento"):
         raise HTTPException(409, "O agente não está mais recebendo conhecimento.")
+    correcao_final = None
+    if e.get("origem") == "feedback_negativo":
+        # só a resposta CORRETA entra na base; a errada fica apenas na tela do aprovador
+        correcao_final = texto_visivel(dados.resposta_corrigida if dados.resposta_corrigida is not None
+                                       else e.get("resposta_corrigida"))
+        if len(correcao_final) < 10:
+            raise HTTPException(400, "Escreva a resposta correta para aprovar (pelo menos 10 caracteres).")
+        if _parecidos(correcao_final, e.get("resposta_original") or ""):
+            raise HTTPException(400, "A resposta correta está igual à resposta que foi avaliada como ruim.")
     caminho = _arquivo_local(e, "enviado")
-    if not caminho:
+    if not caminho and correcao_final is None:
         raise HTTPException(409, "O arquivo não foi encontrado no servidor. Peça para enviar de novo.")
     if not db.mudar_status_envio(envio_id, ("pendente",), "publicando"):
         raise HTTPException(409, "Outro aprovador acabou de decidir este envio.")
     try:
-        with open(caminho, "rb") as f:
-            conteudo = f.read()
+        if correcao_final is not None:
+            conteudo = _texto_feedback("feedback_negativo", ag["nome"], e.get("pergunta") or "", correcao_final).encode("utf-8")
+        else:
+            with open(caminho, "rb") as f:
+                conteudo = f.read()
         nome = e["enviado_nome"] or e["arquivo_nome"]
         mime = TIPOS.get(nome.rsplit(".", 1)[-1].lower(), ("application/octet-stream",))[0]
         r = await dify.documento_enviar(ag["dataset_id"], nome, conteudo, mime)
@@ -670,10 +687,16 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
         motivo = erro.mensagem if isinstance(erro, dify.DifyErro) else type(erro).__name__
         log.warning("aprovação do envio %s falhou: %s", envio_id, motivo)
         raise HTTPException(502, f"Não foi possível enviar para a base do agente no Dify ({motivo}). Nada foi alterado.")
+    extra = {}
+    detalhe = dados.motivo.strip()
+    if correcao_final is not None and correcao_final != (e.get("resposta_corrigida") or "").strip():
+        extra["resposta_corrigida"] = correcao_final
+        detalhe = ("resposta correta escrita pelo aprovador" if not e.get("resposta_corrigida") else
+                   "correção ajustada pelo aprovador") + (f"; {detalhe}" if detalhe else "")
     db.mudar_status_envio(envio_id, ("publicando",), "aprovado", destino_doc=r["document"]["id"],
                           destino_batch=r.get("batch"), decidido_por=user["username"], decidido_em=db.agora(),
-                          motivo=dados.motivo.strip(), autoaprovado=int(proprio))
-    db.registrar_evento(envio_id, user["username"], "autoaprovado" if proprio else "aprovado", dados.motivo.strip())
+                          motivo=dados.motivo.strip(), autoaprovado=int(proprio), **extra)
+    db.registrar_evento(envio_id, user["username"], "autoaprovado" if proprio else "aprovado", detalhe)
     await _tirar_da_quarentena(e)
     _limpar_local(envio_id)
     return _publico(db.get_envio(envio_id), user)
@@ -818,14 +841,188 @@ def registros(agente: int | None = None, usuario: str | None = None, inicio: str
     if formato == "csv":
         saida = io.StringIO()
         w = csv.writer(saida, delimiter=";")
-        w.writerow(["Data/hora", "Ação", "Feita por", "Envio", "Arquivo", "Agente", "Enviado por", "Situação atual",
-                    "Autoaprovado", "Detalhe", "SHA-256"])
+        w.writerow(["Data/hora", "Ação", "Feita por", "Envio", "Tipo", "Arquivo", "Agente", "Enviado por",
+                    "Situação atual", "Autoaprovado", "Detalhe", "SHA-256"])
         for r in itens:
             w.writerow([tempo.hora(r["quando"]), NOME_ACAO.get(r["acao"], r["acao"]), r["autor"], r["envio_id"],
-                        r["arquivo_nome"], r["agente_nome"], r["username"], r["status"],
+                        NOME_ORIGEM.get(r["origem"], r["origem"]), r["arquivo_nome"], r["agente_nome"], r["username"], r["status"],
                         "sim" if r["autoaprovado"] else "não", r["detalhe"] or "", r["sha256"]])
         nome = f"registros-aprovacao-{datetime.now(tempo.FUSO):%Y%m%d-%H%M}.csv"
         db.auditar(user["username"], "exportar_registros_aprovacao", "", f"{len(itens)} registro(s)")
         return Response("﻿" + saida.getvalue(), media_type="text/csv; charset=utf-8",
                         headers={"Content-Disposition": f'attachment; filename="{nome}"'})
     return {"itens": itens, "cortado": cortado}
+
+
+# ------------------------------------------------------------------ avaliações do chat (👍 / 👎) que viram conhecimento
+ORIGENS = {"arquivo", "feedback_positivo", "feedback_negativo"}
+AVALIACOES_POR_HORA = int(os.getenv("CONHECIMENTO_AVALIACOES_POR_HORA", "60"))
+_INVISIVEIS = re.compile(r"[\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
+
+
+def texto_visivel(t: str | None) -> str:
+    """Tira caracteres invisíveis (largura zero, direção) e espaços das pontas."""
+    return _INVISIVEIS.sub("", t or "").strip()
+
+
+def _parecidos(a: str, b: str) -> bool:
+    norm = lambda x: re.sub(r"[\W_]+", "", texto_visivel(x).lower())  # noqa: E731
+    return norm(a) == norm(b)
+NOME_ORIGEM = {"arquivo": "Arquivo", "feedback_positivo": "Resposta validada (👍)", "feedback_negativo": "Correção (👎)"}
+STATUS_FEEDBACK_ATIVOS = ("processando", "pendente", "publicando", "aprovado", "desativado")
+
+
+async def cancelar_envios_do_agente(agente_id: int, autor: str) -> int:
+    """Agente removido: os envios ainda não decididos são cancelados e saem da quarentena (não ficam órfãos)."""
+    n = 0
+    for e in db.listar_envios(status=["processando", "pendente", "erro"], agente_ids=[agente_id], limite=10000):
+        if db.mudar_status_envio(e["id"], ("processando", "pendente", "erro"), "cancelado", decidido_por=autor,
+                                 decidido_em=db.agora()):
+            db.registrar_evento(e["id"], autor, "cancelado", "agente removido da plataforma")
+            await _tirar_da_quarentena(e)
+            _limpar_local(e["id"])
+            n += 1
+    return n
+
+
+def agente_recebe(ag: dict | None) -> bool:
+    return bool(ag and ag["ativo"] and ag.get("recebe_conhecimento") and ag.get("dataset_id"))
+
+
+async def _mensagem_no_dify(ag: dict, username: str, conversation_id: str, message_id: str) -> dict:
+    """Busca a pergunta e a resposta no próprio Dify (nunca confia no texto vindo do navegador)."""
+    primeira = None
+    for _ in range(30):  # até 3 mil mensagens para trás na conversa
+        r = await dify.mensagens(ag["chave"], username, conversation_id, primeira, 100)
+        dados = r.get("data") or []
+        for m in dados:
+            if m.get("id") == message_id:
+                return m
+        if not r.get("has_more") or not dados:
+            break
+        primeira = min(dados, key=lambda m: m.get("created_at") or 0)["id"]
+    raise HTTPException(404, "Resposta não encontrada nesta conversa.")
+
+
+def _texto_feedback(origem: str, agente: str, pergunta: str, resposta: str, sem_correcao: bool = False) -> str:
+    if sem_correcao:  # 👎 sem correção: só vai para a quarentena; na aprovação entra a resposta correta do aprovador
+        return (f"# Resposta avaliada como incorreta - {agente}\n\n## Pergunta\n{pergunta.strip()}\n\n"
+                f"## Resposta do agente (avaliada como incorreta)\n{resposta.strip()}\n\n---\nAguardando a resposta correta, "
+                "que o aprovador escreve ao aprovar.\n")
+    if origem == "feedback_positivo":
+        return (f"# Resposta validada - {agente}\n\n## Pergunta\n{pergunta.strip()}\n\n## Resposta\n{resposta.strip()}\n\n"
+                "---\nResposta do agente avaliada como útil por um usuário e aprovada para a base de conhecimento.\n")
+    return (f"# Resposta corrigida - {agente}\n\n## Pergunta\n{pergunta.strip()}\n\n## Resposta correta\n{resposta.strip()}\n\n"
+            "---\nCorreção enviada por um usuário para uma resposta anterior do agente e aprovada para a base de "
+            "conhecimento. Para perguntas parecidas, use esta resposta.\n")
+
+
+def _criar_envio_texto(ag: dict, username: str, origem: str, nome: str, texto: str, justificativa: str,
+                       **extras) -> dict:
+    """Cria um envio a partir de um texto gerado (segue o mesmo fluxo de um arquivo: quarentena, alertas, aprovação)."""
+    dados = texto.encode("utf-8")
+    sha = hashlib.sha256(dados).hexdigest()
+    # cada avaliação é de uma pessoa sobre uma mensagem: não mescla com envios de outras pessoas/mensagens,
+    # mesmo com texto igual (a duplicidade já é evitada por mensagem + pessoa + tipo)
+    hora_atras = tempo.iso_utc(datetime.now(timezone.utc) - timedelta(hours=1))
+    recentes = [x for x in db.listar_envios(username=username, inicio=hora_atras, limite=1000) if x.get("origem") != "arquivo"]
+    if len(recentes) >= AVALIACOES_POR_HORA:
+        raise HTTPException(429, "Muitas avaliações enviadas para aprovação na última hora. A avaliação foi registrada no "
+                                 "Dify, mas não foi para a fila agora.")
+    envio_id = db.criar_envio(agente_id=ag["id"], agente_nome=ag["nome"], dataset_id=ag["dataset_id"], username=username,
+                              arquivo_nome=nome, arquivo_ext="md", tamanho=len(dados), sha256=sha,
+                              justificativa=justificativa[:1000], status="processando", origem=origem, **extras)
+    os.makedirs(_pasta(envio_id), exist_ok=True)
+    with open(os.path.join(_pasta(envio_id), "original.md"), "wb") as f:
+        f.write(dados)
+    db.registrar_evento(envio_id, username, "enviado", NOME_ORIGEM[origem] + f" (mensagem {extras.get('message_id', '')[:8]}…)")
+    agendar(envio_id)
+    return db.get_envio(envio_id)
+
+
+def _cancelar_feedback_aberto(message_id: str, username: str, origem: str, motivo: str) -> None:
+    aberto = db.envio_do_feedback(message_id, username, origem, ("processando", "pendente", "erro"))
+    if aberto and db.mudar_status_envio(aberto["id"], ("processando", "pendente", "erro"), "cancelado",
+                                        decidido_por=username, decidido_em=db.agora()):
+        db.registrar_evento(aberto["id"], username, "cancelado", motivo)
+        asyncio.create_task(_tirar_da_quarentena(aberto))
+        _limpar_local(aberto["id"])
+
+
+async def feedback_no_chat(ag: dict, user: dict, message_id: str, conversation_id: str | None, avaliacao: str | None,
+                           comentario: str = "") -> dict | None:
+    """Chamado depois que o 👍/👎 foi gravado no Dify. 👍 manda a resposta para aprovação; tirar o 👍 (ou trocar por 👎)
+    cancela o envio que ainda não foi decidido. A correção do 👎 vem pela rota /api/conhecimento/correcao."""
+    username = user["username"]
+    # trocar ou retirar a avaliação cancela o envio da avaliação anterior que ainda não foi decidido
+    if avaliacao != "like":
+        _cancelar_feedback_aberto(message_id, username, "feedback_positivo", "avaliação positiva retirada no chat")
+    if avaliacao != "dislike":
+        _cancelar_feedback_aberto(message_id, username, "feedback_negativo", "avaliação negativa retirada no chat")
+    if avaliacao is None or not agente_recebe(ag) or not conversation_id:
+        return None
+    origem = "feedback_positivo" if avaliacao == "like" else "feedback_negativo"
+    existente = db.envio_do_feedback(message_id, username, origem, STATUS_FEEDBACK_ATIVOS)
+    if existente:
+        return _publico(existente, user)
+    m = await _mensagem_no_dify(ag, username, conversation_id, message_id)
+    pergunta, resposta = (m.get("query") or "").strip(), (m.get("answer") or "").strip()
+    if not pergunta or not resposta:
+        return None
+    obs = f" Comentário: {comentario.strip()}" if comentario.strip() else ""
+    if origem == "feedback_positivo":
+        texto = _texto_feedback(origem, ag["nome"], pergunta, resposta)
+        justificativa, nome = "Resposta avaliada como útil (👍) no chat." + obs, f"resposta-validada-{message_id[:8]}.md"
+    else:  # 👎 entra na fila mesmo sem correção: o aprovador escreve a resposta correta ao aprovar
+        texto = _texto_feedback(origem, ag["nome"], pergunta, resposta, sem_correcao=True)
+        justificativa, nome = "Resposta avaliada como ruim (👎) no chat, sem correção." + obs, f"correcao-{message_id[:8]}.md"
+    e = _criar_envio_texto(ag, username, origem, nome, texto, justificativa, message_id=message_id,
+                           conversation_id=conversation_id, pergunta=pergunta[:8000], resposta_original=resposta[:20000])
+    return _publico(e, user)
+
+
+class CorrecaoIn(BaseModel):
+    agente_id: int
+    message_id: str = Field(min_length=8, max_length=64)
+    conversation_id: str = Field(min_length=8, max_length=64)
+    correcao: str = Field(min_length=1, max_length=8000)
+    comentario: str = Field(default="", max_length=1000)
+
+
+@router.post("/api/conhecimento/correcao")
+async def corrigir_resposta(dados: CorrecaoIn, user: dict = Depends(usuario_atual)):
+    """👎 com correção: a resposta correta escrita pela pessoa vai para aprovação."""
+    ag = db.get_agente(dados.agente_id)
+    if not ag or not ag["ativo"] or not db.tem_acesso(user["username"], dados.agente_id):
+        raise HTTPException(403, "Você não tem acesso a este agente.")
+    if not agente_recebe(ag):
+        raise HTTPException(400, "Este agente não está recebendo conhecimento.")
+    if not RX_ID_DIFY.fullmatch(dados.message_id) or not RX_ID_DIFY.fullmatch(dados.conversation_id):
+        raise HTTPException(400, "Identificador inválido.")
+    correcao = texto_visivel(dados.correcao)
+    if len(correcao) < 10:
+        raise HTTPException(400, "Escreva a resposta correta (pelo menos 10 caracteres).")
+    try:
+        m = await _mensagem_no_dify(ag, user["username"], dados.conversation_id, dados.message_id)
+    except dify.DifyErro as e:
+        raise HTTPException(404 if e.status == 404 else 502, "Não foi possível localizar a resposta no Dify.")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Não foi possível falar com o Dify.")
+    pergunta, original = (m.get("query") or "").strip(), (m.get("answer") or "").strip()
+    if _parecidos(correcao, original):
+        raise HTTPException(400, "A correção está igual à resposta do agente.")
+    # 2) corrigir implica avaliar como ruim: registra o 👎 no Dify também (se ainda não estava)
+    try:
+        await dify.feedback(ag["chave"], user["username"], dados.message_id, "dislike", "")
+    except (dify.DifyErro, httpx.HTTPError) as erro:
+        log.warning("não registrei o 👎 da correção no Dify: %s", erro)
+    _cancelar_feedback_aberto(dados.message_id, user["username"], "feedback_positivo", "trocada por uma correção")
+    # uma correção por resposta: mandar outra substitui a que ainda não foi decidida
+    _cancelar_feedback_aberto(dados.message_id, user["username"], "feedback_negativo", "substituída por uma correção nova")
+    justificativa = "Correção enviada após avaliar a resposta como ruim (👎) no chat." + (
+        f" Comentário: {dados.comentario.strip()}" if dados.comentario.strip() else "")
+    e = _criar_envio_texto(ag, user["username"], "feedback_negativo", f"correcao-{dados.message_id[:8]}.md",
+                           _texto_feedback("feedback_negativo", ag["nome"], pergunta, correcao), justificativa,
+                           message_id=dados.message_id, conversation_id=dados.conversation_id, pergunta=pergunta[:8000],
+                           resposta_original=original[:20000], resposta_corrigida=correcao)
+    return _publico(e, user)

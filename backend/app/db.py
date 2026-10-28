@@ -134,6 +134,15 @@ COLUNAS_NOVAS = {
         "autoaprovacao": "INTEGER NOT NULL DEFAULT 1",
         "dataset_id": "TEXT",
     },
+    # envios que nascem de uma avaliação no chat (👍 resposta validada / 👎 correção)
+    "envios": {
+        "origem": "TEXT NOT NULL DEFAULT 'arquivo'",   # arquivo, feedback_positivo, feedback_negativo
+        "message_id": "TEXT",
+        "conversation_id": "TEXT",
+        "pergunta": "TEXT",
+        "resposta_original": "TEXT",
+        "resposta_corrigida": "TEXT",
+    },
 }
 
 
@@ -465,7 +474,7 @@ def criar_envio(**campos) -> int:
 
 CAMPOS_ENVIO = {"status", "enviado_nome", "convertido", "ocr", "paginas", "caracteres", "trechos", "alertas",
                 "quarentena_doc", "destino_doc", "destino_batch", "erro", "decidido_por", "decidido_em", "motivo",
-                "autoaprovado"}
+                "autoaprovado", "resposta_corrigida"}
 
 
 def atualizar_envio(envio_id: int, **campos) -> None:
@@ -495,10 +504,23 @@ def get_envio(envio_id: int) -> dict | None:
         return _envio(c.execute("SELECT * FROM envios WHERE id = ?", (envio_id,)).fetchone())
 
 
+def envio_do_feedback(message_id: str, username: str, origem: str, status: tuple[str, ...]) -> dict | None:
+    """Envio da mesma resposta, da mesma pessoa e do mesmo tipo, numa das situações informadas."""
+    with conn() as c:
+        return _envio(c.execute(
+            f"SELECT * FROM envios WHERE message_id = ? AND username = ? AND origem = ? "
+            f"AND status IN ({', '.join('?' * len(status))}) ORDER BY id DESC LIMIT 1",
+            (message_id, username.lower(), origem, *status)).fetchone())
+
+
 def listar_envios(status: list[str] | None = None, agente_ids: list[int] | None = None, username: str | None = None,
-                  inicio: str | None = None, fim: str | None = None, limite: int = 500) -> list[dict]:
+                  inicio: str | None = None, fim: str | None = None, limite: int = 500,
+                  origem: str | None = None) -> list[dict]:
     """agente_ids=None: todos os agentes; lista vazia: nenhum (aprovador sem agentes)."""
     cond, args = [], []
+    if origem:
+        cond.append("origem = ?")
+        args.append(origem)
     if status:
         cond.append(f"status IN ({', '.join('?' * len(status))})")
         args += status
@@ -564,7 +586,7 @@ def listar_eventos_conhecimento(agente_ids: list[int] | None = None, usuario: st
         args.append(int(autoaprovado))
     where = (" WHERE " + " AND ".join(cond)) if cond else ""
     sql = (f"SELECT v.id, v.envio_id, v.quando, v.autor, v.acao, v.detalhe, e.agente_id, e.agente_nome, e.username, "
-           f"e.arquivo_nome, e.status, e.autoaprovado, e.sha256 FROM eventos_conhecimento v "
+           f"e.arquivo_nome, e.status, e.autoaprovado, e.sha256, e.origem FROM eventos_conhecimento v "
            f"JOIN envios e ON e.id = v.envio_id{where} ORDER BY v.id DESC LIMIT ?")
     with conn() as c:
         itens = [dict(r) for r in c.execute(sql, (*args, limite + 1))]

@@ -553,7 +553,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 .selo-status.neutro { background: var(--superficie-2); color: var(--texto-suave); border: 1px solid var(--borda); }
 :root[data-tema="escuro"] .selo-status.ok { color: var(--flex-verde); }
 :root[data-tema="escuro"] .selo-status.aviso { color: #ffcf70; }
-.envio-detalhe { max-height: 64vh; overflow-y: auto; margin-top: 10px; display: grid; gap: 10px; }
+.envio-detalhe { max-height: 64vh; overflow-y: auto; margin-top: 10px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }  /* minmax: tabela larga rola no próprio quadro */
 .envio-bloco { background: var(--bg); border-radius: 12px; padding: 12px 14px; font-size: 14px; }
 .envio-bloco p { margin: 6px 0 0; }
 .envio-links a { font-weight: 600; }
@@ -573,3 +573,10 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 .linha-tempo li { margin: 3px 0; }
 .envio-acoes { gap: 8px; }
 .reg-conh .reg-agente { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* ---------- avaliações que viram conhecimento (👍 / 👎 com correção) ---------- */
+.envio-bloco .pre { white-space: pre-wrap; word-break: break-word; }
+.envio-bloco.correcao { border-left: 4px solid var(--flex-verde); }
+.resposta-original { margin-top: 6px; font-size: 14px; }
+.correcao-original { margin: 10px 0 0; font-size: 14px; }
+.correcao-original summary { cursor: pointer; color: var(--texto-suave); }
+.correcao-original .md { max-height: 26vh; overflow-y: auto; background: var(--bg); border-radius: 10px; padding: 10px 12px; margin-top: 6px; }

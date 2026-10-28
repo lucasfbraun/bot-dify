@@ -1,10 +1,10 @@
 /* Service worker dos agentes do Grupo Flexível: deixa o app instalável e abre rápido.
    Nunca guarda nada de /api (respostas e dados ficam só no servidor). */
-const VERSAO = 'agente-pu-v6';
+const VERSAO = 'agente-pu-v7';
 const SHELL = [
   '/',
-  '/assets/app.css?v=5',
-  '/assets/app.js?v=5',
+  '/assets/app.css?v=6',
+  '/assets/app.js?v=6',
   '/assets/vendor/marked.min.js',
   '/assets/vendor/purify.min.js',
   '/icons/logo-flexivel.svg',

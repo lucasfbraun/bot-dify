@@ -729,7 +729,7 @@ async function abrirConversa(id, primeiroId = null) {
       frag.appendChild(bolhaUsuario(m.pergunta));
       const bot = bolhaBot();
       renderMarkdown(bot.md, m.resposta);
-      finalizarBot(bot, { id: m.id, texto: m.resposta, avaliacao: m.avaliacao, fontes: m.fontes, aid: a.id });
+      finalizarBot(bot, { id: m.id, texto: m.resposta, avaliacao: m.avaliacao, fontes: m.fontes, aid: a.id, cid: id });
       frag.appendChild(bot.raiz);
     }
     if (primeiroId) {
@@ -779,7 +779,7 @@ function erroBox(msg) {
   return d;
 }
 
-function finalizarBot(bot, { id, texto, avaliacao, fontes, aid }) {
+function finalizarBot(bot, { id, texto, avaliacao, fontes, aid, cid }) {
   if (fontes && fontes.length) {
     const det = document.createElement('details');
     det.className = 'fontes';
@@ -809,10 +809,16 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes, aid }) {
     }
     const ligado = b.classList.contains('on');
     const nova = ligado ? null : b.dataset.a;
+    const recebe = !!estado.agentes.find((a) => a.id === aid)?.recebe_conhecimento;
     try {
-      await enviarJSON(rota(`/mensagens/${encodeURIComponent(id)}/feedback`, aid), 'POST', { avaliacao: nova });
+      const r = await enviarJSON(rota(`/mensagens/${encodeURIComponent(id)}/feedback`, aid), 'POST',
+        { avaliacao: nova, conversation_id: cid || null });
       for (const x of $$('[data-a="like"],[data-a="dislike"]', acoes)) x.classList.toggle('on', x.dataset.a === nova);
-      if (nova) toast(nova === 'like' ? 'Obrigado pela avaliação!' : 'Obrigado! Vamos usar isso para melhorar o agente.');
+      if (r.aviso) toast(r.aviso, 6000);
+      else if (nova === 'like') toast(r.envio ? 'Obrigado! A resposta foi para aprovação e pode virar conhecimento do agente.' : 'Obrigado pela avaliação!', 5000);
+      else if (nova === 'dislike' && !r.envio) toast('Obrigado! Vamos usar isso para melhorar o agente.');
+      // 👎 já foi para aprovação; a correção é opcional (sem ela, o aprovador escreve a resposta certa)
+      if (nova === 'dislike' && r.envio && recebe) abrirCorrecao({ aid, id, cid, texto });
     } catch (e) {
       toast(e.message);
     }
@@ -1055,6 +1061,7 @@ async function enviarPergunta() {
   modoGerando(true);
 
   const conversaEnviada = estado.conversaAtual;
+  let conversaId = conversaEnviada;  // conversa desta resposta (para o 👍/👎 virar conhecimento)
   const sessao = estado.sessaoChat;
   const mesmaTela = () => estado.sessaoChat === sessao;
   let texto = '';
@@ -1102,6 +1109,7 @@ async function enviarPergunta() {
           switch (ev.t) {
             case 'inicio':
               estado.taskId = ev.task_id;
+              conversaId = ev.conversation_id || conversaId;
               messageId = ev.message_id || messageId;
               if (mesmaTela() && !estado.conversaAtual && ev.conversation_id) {
                 estado.conversaAtual = ev.conversation_id;
@@ -1147,7 +1155,7 @@ async function enviarPergunta() {
     bot.md.insertAdjacentHTML('beforeend', '<p class="muted"><em>(resposta interrompida)</em></p>');
   }
   if (erro) bot.conteudo.appendChild(erroBox(erro));
-  finalizarBot(bot, { id: messageId, texto, fontes, aid: agente.id });
+  finalizarBot(bot, { id: messageId, texto, fontes, aid: agente.id, cid: conversaId });
   // se outra resposta já começou (troca rápida de conversa), não mexe no estado dela
   if (estado.abort === ctrl) {
     estado.taskId = null;
@@ -1924,13 +1932,24 @@ async function enviarConhecimento(e) {
   }
 }
 
+/* o que os trechos mostram: no 👎 pendente é a cópia da quarentena (com a resposta errada), não o que será publicado */
+function rotuloTrechos(e, deFeedback) {
+  if (!deFeedback) return 'Trechos que o agente vai consultar';
+  if (['aprovado', 'desativado'].includes(e.status)) return 'Texto publicado na base do agente';
+  if (e.origem === 'feedback_negativo') return 'Cópia em quarentena, só para conferência (a resposta errada NÃO vai para a base; vai só a resposta correta acima)';
+  return 'Texto que vai para a base do agente';
+}
+
+const TITULO_ORIGEM = { feedback_positivo: '👍 Resposta validada', feedback_negativo: '✏️ Correção' };
+const tituloEnvio = (e) => (TITULO_ORIGEM[e.origem] ? `${TITULO_ORIGEM[e.origem]}: ${(e.pergunta || '').slice(0, 90)}` : e.arquivo_nome);
+
 function linhaEnvio(e, { mostrarQuem = false } = {}) {
   const d = document.createElement('div');
   d.className = 'envio-linha-lista';
   const alertasAltos = (e.alertas || []).filter((a) => a.nivel === 'alto').length;
   d.innerHTML = `
     <div class="info">
-      <div class="nome" title="${esc(e.arquivo_nome)}">${esc(e.arquivo_nome)}</div>
+      <div class="nome" title="${esc(tituloEnvio(e))}">${esc(tituloEnvio(e))}</div>
       <div class="sub">${mostrarQuem ? `${esc(nomeDoUsuario(e.username))} · ` : ''}${esc(e.agente_nome || '')} · ${esc(dataHora(e.criado_em))} · ${esc(tamanhoLegivel(e.tamanho))}${e.autoaprovado ? ' · <b>autoaprovado</b>' : ''}</div>
       ${e.status === 'rejeitado' && e.motivo ? `<div class="sub motivo">Motivo: ${esc(e.motivo)}</div>` : ''}
       ${e.status === 'erro' && e.erro ? `<div class="sub motivo">${esc(e.erro)}</div>` : ''}
@@ -1994,6 +2013,7 @@ async function carregarAprovados() {
   const lista = $('#lista-aprovados');
   const f = { status: $('#apr-status').value };
   if ($('#apr-agente').value) f.agente = $('#apr-agente').value;
+  if ($('#apr-origem').value) f.origem = $('#apr-origem').value;
   if ($('#apr-usuario').value.trim()) f.usuario = $('#apr-usuario').value.trim();
   if ($('#apr-inicio').value) f.inicio = $('#apr-inicio').value;
   if ($('#apr-fim').value) f.fim = $('#apr-fim').value;
@@ -2102,7 +2122,7 @@ async function abrirEnvio(id) {
 }
 
 function desenharEnvio(e) {
-  $('#envio-titulo').textContent = e.arquivo_nome;
+  $('#envio-titulo').textContent = TITULO_ORIGEM[e.origem] || e.arquivo_nome;
   $('#envio-sub').innerHTML = `${seloStatus(e.status)} ${esc(e.agente_nome || '')} · enviado por ${esc(nomeDoUsuario(e.username))} em ${esc(dataHora(e.criado_em))}`
     + (e.decidido_por ? ` · decidido por ${esc(nomeDoUsuario(e.decidido_por))}${e.autoaprovado ? ' <b>(autoaprovado)</b>' : ''}` : '');
   const info = [
@@ -2116,8 +2136,17 @@ function desenharEnvio(e) {
     <div class="alerta ${esc(a.nivel)}"><strong>${esc(NIVEL_ALERTA[a.nivel] || '')}: ${esc(a.titulo)}</strong>
       <p>${esc(a.detalhe)}</p>${(a.exemplos || []).map((x) => `<code>${esc(x)}</code>`).join('')}</div>`).join('');
   const temConteudo = ['pendente', 'publicando', 'aprovado', 'desativado'].includes(e.status);
+  const deFeedback = e.origem && e.origem !== 'arquivo';
   const box = $('#envio-detalhe');
   box.innerHTML = `
+    ${deFeedback ? `<div class="envio-bloco"><b>Pergunta feita ao agente</b><p class="pre">${esc(e.pergunta || '')}</p></div>
+      <div class="envio-bloco"><b>${e.origem === 'feedback_negativo' ? 'Resposta do agente (avaliada como ruim)' : 'Resposta do agente (avaliada como útil)'}</b>
+        <div class="md resposta-original"></div></div>
+      ${e.origem === 'feedback_negativo' ? (e.pode_decidir
+    ? `<div class="envio-bloco correcao"><label for="aprov-correcao"><b>Resposta correta que vai para a base do agente</b></label>
+        <p class="muted dica">${e.resposta_corrigida ? `Escrita por ${esc(nomeDoUsuario(e.username))}; você pode ajustar antes de aprovar.` : 'Quem avaliou não escreveu a correção: escreva a resposta certa para aprovar.'}</p>
+        <textarea id="aprov-correcao" rows="6" maxlength="8000"></textarea></div>`
+    : `<div class="envio-bloco correcao"><b>Resposta correta</b><p class="pre">${esc(e.resposta_corrigida || (e.status === 'pendente' ? 'Ainda não escrita: o aprovador escreve ao aprovar.' : '—'))}</p></div>`) : ''}` : ''}
     <div class="envio-bloco"><b>Justificativa</b><p>${esc(e.justificativa)}</p><p class="muted">${esc(info)}</p>
       ${e.motivo ? `<p><b>${e.status === 'rejeitado' ? 'Motivo da rejeição' : 'Comentário da decisão'}:</b> ${esc(e.motivo)}</p>` : ''}
       ${e.erro ? `<p class="falha-texto">${esc(e.erro)}</p>` : ''}
@@ -2126,12 +2155,15 @@ function desenharEnvio(e) {
       ${e.status === 'pendente' && e.aprovadores && !e.aprovadores.length ? '<p class="falha-texto">Este agente ainda não tem aprovador. Peça ao administrador para marcar um.</p>' : ''}
     </div>
     ${alertas ? `<div class="envio-bloco"><b>Alertas automáticos</b>${alertas}</div>` : (temConteudo ? '<div class="envio-bloco"><b>Alertas automáticos</b><p class="muted">Nenhum alerta encontrado.</p></div>' : '')}
-    ${temConteudo ? `<div class="envio-bloco"><b>Arquivo</b><p class="envio-links">
+    ${temConteudo && !deFeedback ? `<div class="envio-bloco"><b>Arquivo</b><p class="envio-links">
         <a href="/api/conhecimento/envios/${e.id}/arquivo?qual=enviado" target="_blank" rel="noopener">Abrir ${e.convertido ? 'PDF (como o agente lê)' : 'arquivo'}</a>
         ${e.convertido && ['pendente', 'publicando'].includes(e.status) ? ` · <a href="/api/conhecimento/envios/${e.id}/arquivo?qual=original">Baixar original (.${esc(e.arquivo_ext)})</a>` : ''}
       </p></div>
-      <div class="envio-bloco"><b>Trechos que o agente vai consultar</b><div class="trechos" id="envio-trechos"><p class="muted">Carregando…</p></div></div>` : ''}
+      ` : ''}
+    ${temConteudo ? `<div class="envio-bloco"><b>${rotuloTrechos(e, deFeedback)}</b><div class="trechos" id="envio-trechos"><p class="muted">Carregando…</p></div></div>` : ''}
     <details class="envio-bloco linha-tempo"><summary><b>Histórico</b></summary><ul>${(e.eventos || []).map((v) => `<li><span class="muted">${esc(dataHora(v.quando))}</span> ${esc(ACAO_CONH[v.acao] || v.acao)} · ${esc(v.autor)}${v.detalhe ? ` — ${esc(v.detalhe)}` : ''}</li>`).join('')}</ul></details>`;
+  if (deFeedback) renderMarkdown($('.resposta-original', box), e.resposta_original || '');
+  if ($('#aprov-correcao', box)) $('#aprov-correcao', box).value = e.resposta_corrigida || '';
   if (temConteudo) carregarTrechos(e.id, 1);
 
   const acoes = $('#envio-acoes');
@@ -2200,15 +2232,20 @@ const TEXTOS_DECISAO = {
 async function decidir(e, acao) {
   const t = TEXTOS_DECISAO[acao];
   let motivo = '';
+  let correcao;
+  if (acao === 'aprovar' && e.origem === 'feedback_negativo') {
+    correcao = ($('#aprov-correcao')?.value || '').trim();
+    if (correcao.length < 10) { toast('Escreva a resposta correta antes de aprovar (pelo menos 10 caracteres).', 5000); $('#aprov-correcao')?.focus(); return; }
+  }
   for (;;) {
-    const r = await confirmar({ titulo: t.titulo, texto: `${e.arquivo_nome} — ${t.texto}`, input: !t.semTexto, valor: motivo, ok: t.ok });
+    const r = await confirmar({ titulo: t.titulo, texto: `${tituloEnvio(e)} — ${t.texto}`, input: !t.semTexto, valor: motivo, ok: t.ok });
     if (r === null) return;
     motivo = t.semTexto ? '' : String(r).trim();
     if (!t.obrigatorio || motivo.length >= 5) break;
     toast('Escreva o motivo (pelo menos 5 caracteres).');
   }
   try {
-    const corpo = acao === 'cancelar' ? undefined : { motivo };
+    const corpo = acao === 'cancelar' ? undefined : { motivo, ...(correcao !== undefined ? { resposta_corrigida: correcao } : {}) };
     const atualizado = await (await api(`/api/conhecimento/envios/${e.id}/${acao}`, { metodo: 'POST', corpo })).json();
     toast({ aprovar: 'Aprovado: já está na base do agente.', rejeitar: 'Envio rejeitado.', cancelar: 'Envio cancelado.',
       desativar: 'Conhecimento desativado.', reativar: 'Conhecimento reativado.', excluir: 'Conhecimento excluído.' }[acao], 4500);
@@ -2267,6 +2304,44 @@ function botaoAprovaUsuario(u) {
   const texto = nomes.length ? `Aprova: ${nomes.length === 1 ? nomes[0] : `${nomes.length} agentes`}` : 'Não aprova';
   return `<button type="button" class="btn-agentes btn-aprova${nomes.length ? ' marcado' : ''}" title="${esc(nomes.length ? `Aprova conhecimento de: ${nomes.join(', ')}` : 'Não aprova conhecimento de nenhum agente')}"
     aria-label="Aprovações de ${esc(u.username)}: ${esc(texto)}"${estado.adminAgentes.length ? '' : ' disabled'}>${esc(texto)}</button>`;
+}
+
+/* ---- correção de resposta (👎) ---- */
+let correcaoAlvo = null;
+
+function abrirCorrecao(alvo) {
+  correcaoAlvo = alvo;
+  renderMarkdown($('#correcao-original'), alvo.texto || '');
+  $('#correcao-texto').value = '';
+  $('#correcao-comentario').value = '';
+  $('#correcao-erro').hidden = true;
+  $('#dlg-correcao').showModal();
+  setTimeout(() => $('#correcao-texto').focus(), 30);
+}
+
+async function enviarCorrecao(e) {
+  e.preventDefault();
+  if (e.submitter?.value === 'cancel') { $('#dlg-correcao').close(); toast('Obrigado! A avaliação foi para aprovação; um aprovador vai escrever a resposta certa.', 5000); return; }
+  const erro = $('#correcao-erro');
+  const correcao = $('#correcao-texto').value.trim();
+  erro.hidden = true;
+  if (correcao.length < 10) { erro.textContent = 'Escreva a resposta correta (pelo menos 10 caracteres).'; erro.hidden = false; return; }
+  const btn = $('#correcao-enviar');
+  btn.disabled = true;
+  btn.textContent = 'Enviando…';
+  try {
+    const a = correcaoAlvo;
+    await enviarJSON('/api/conhecimento/correcao', 'POST', { agente_id: a.aid, message_id: a.id, conversation_id: a.cid,
+      correcao, comentario: $('#correcao-comentario').value.trim() });
+    $('#dlg-correcao').close();
+    toast('Correção enviada para aprovação. Obrigado!', 5000);
+  } catch (err) {
+    erro.textContent = err.message;
+    erro.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Enviar correção';
+  }
 }
 
 /* ---- diálogo: adicionar usuário pelo AD ---- */
@@ -2409,6 +2484,7 @@ function ligarEventos() {
   $('#dlg-envio').addEventListener('close', () => { envioAberto = null; });
   $('#btn-chave-conh').addEventListener('click', abrirChaveConhecimento);
   $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
+  $('#form-correcao').addEventListener('submit', enviarCorrecao);
   $('#menu-tema').addEventListener('click', alternarTema);
   $('#menu-sair').addEventListener('click', sair);
 

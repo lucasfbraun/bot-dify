@@ -10,6 +10,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Conversas de todos os usuários**: o administrador lê qualquer conversa de qualquer agente e exporta em TXT a conversa aberta, as selecionadas ou todas as do filtro.
 - **Chat com streaming**: seletor de agente na barra lateral (e atalhos na tela inicial), histórico separado por agente, status do que o agente está fazendo (consultando o Qlik, buscando certificados etc.), renomear/apagar, copiar e avaliar (👍/👎 vão para os registros do Dify).
 - **Envio de conhecimento com aprovação**: o usuário envia um arquivo (PDF, Office, apresentações, planilhas, imagens) para um agente aprender. O arquivo passa por leitura máxima (conversão para PDF e OCR), fica em quarentena, recebe alertas automáticos (instruções suspeitas, dados pessoais, pouco texto) e só entra na base do agente depois da aprovação de um aprovador daquele agente. Só administradores desativam ou excluem um conhecimento aprovado.
+- **Avaliações viram treinamento**: nos agentes que recebem conhecimento, cada 👍 manda a resposta para aprovação como "resposta validada", e cada 👎 manda para aprovação como "correção". No 👎, a pessoa pode escrever a resposta certa (opcional); se não escrever, o aprovador escreve ao aprovar. Só a resposta correta entra na base do agente.
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
@@ -171,6 +172,31 @@ Depois que o Dify processa, a plataforma conta quanto texto saiu e avisa o aprov
 - **Aprovados**: filtros de agente, quem enviou, situação (ativos, desativados, excluídos, rejeitados) e período. O arquivo aprovado é lido direto do Dify.
 - **Registros de aprovação**: filtros de agente, usuário (quem enviou ou quem decidiu), ação e período, com exportação **CSV** (abre no Excel). Exportar também fica na auditoria.
 
+### Avaliações do chat (👍 / 👎) viram conhecimento
+
+Nos agentes com **"Receber conhecimento dos usuários"** ligado, as avaliações das respostas também entram na fila de aprovação, para o agente aprender com elas. Nos outros agentes, o 👍/👎 continua indo só para os registros do Dify, como antes.
+
+| Avaliação | O que vai para a fila | O que entra na base se aprovado |
+|---|---|---|
+| 👍 Resposta útil | Pergunta e resposta do agente ("👍 Resposta validada") | A pergunta e a resposta validada |
+| 👎 com correção | Pergunta, resposta do agente e a resposta certa escrita pela pessoa ("✏️ Correção") | A pergunta e a **resposta correta**; o aprovador pode ajustar o texto antes de aprovar |
+| 👎 sem correção | Pergunta e resposta do agente ("✏️ Correção") | A pergunta e a **resposta correta escrita pelo aprovador**, que é obrigatória para aprovar |
+
+Como funciona:
+
+- **No chat:** ao clicar em 👎, abre a caixa **"Quer ajudar com a resposta certa?"**. Escrever é opcional: a avaliação já foi para aprovação. Clicar em **"Agora não"** deixa para o aprovador escrever.
+- **Para o aprovador:** a correção mostra a pergunta, a resposta do agente (para comparar) e o campo **"Resposta correta que vai para a base do agente"**, já preenchido quando a pessoa escreveu. Sem texto nesse campo, a correção não pode ser aprovada.
+- **Só a resposta certa entra na base.** A resposta errada do agente fica apenas na tela do aprovador; se entrasse na base, o agente poderia voltar a usá-la.
+- **A pergunta e a resposta são lidas do próprio Dify**, não do navegador. Assim ninguém consegue mandar para aprovação uma "resposta do agente" que ele não deu: se a mensagem não pertence à conversa informada, nada é criado.
+- **Mudou de ideia:** retirar o 👍/👎, ou trocar um pelo outro, cancela o envio anterior se ele ainda não foi decidido. Mandar outra correção para a mesma resposta substitui a anterior. Avaliar de novo a mesma resposta não duplica o envio. Cada avaliação é de uma pessoa sobre uma resposta: duas pessoas avaliando respostas com o mesmo texto geram envios separados.
+- **Corrigir também conta como 👎:** mandar uma correção registra a avaliação negativa no Dify, mesmo que o 👎 não tenha sido clicado antes.
+- **Resposta correta de verdade:** a correção (da pessoa ou do aprovador) precisa ter pelo menos 10 caracteres visíveis (caracteres invisíveis não contam) e não pode ser igual à resposta que foi avaliada como ruim.
+- **Limite:** no máximo 60 avaliações por pessoa por hora viram envios (`CONHECIMENTO_AVALIACOES_POR_HORA`). Acima disso, a avaliação continua registrada no Dify, mas não entra na fila, e a pessoa é avisada.
+- **Agente removido:** os envios dele que ainda não foram decididos (arquivos e avaliações) são cancelados e saem da quarentena.
+- **Para o aprovador, no 👎 ainda pendente:** o quadro de trechos é a **cópia em quarentena**, que contém a resposta errada e serve só para conferência. O que vai para a base é apenas o campo "Resposta correta".
+- **Mesma segurança dos arquivos:** o texto passa pela quarentena e pelos alertas automáticos. Uma correção com "ignore as instruções anteriores…" gera o alerta de instrução suspeita. As regras de autoaprovação e de quem decide são as mesmas.
+- **Registros:** os envios aparecem com o tipo ("Resposta validada (👍)", "Correção (👎)") na lista, no filtro **Tipo** da aba Aprovados e na coluna **Tipo** do CSV dos registros. Quando o aprovador escreve ou ajusta a resposta correta, isso fica registrado.
+
 ### Alertas automáticos
 
 Os alertas **não bloqueiam** nada; servem para o aprovador olhar com atenção:
@@ -199,7 +225,8 @@ Os alertas **não bloqueiam** nada; servem para o aprovador olhar com atenção:
 | `CONHECIMENTO_MAX_MB` | `15` | Tamanho máximo do arquivo. O Dify aceita 15 MB por padrão (`UPLOAD_FILE_SIZE_LIMIT` no Dify); acima disso, aumente lá também e no nginx (`client_max_body_size`). |
 | `DIFY_DATASET_API_KEY` | vazio | Alternativa à chave cadastrada na tela. |
 | `CONVERSOR_URL` | `http://conversor:8000` (no compose) | Endereço do conversor. Vazio = sem conversão (PPT, DOC e imagens ficam indisponíveis; PDF vai sem OCR). |
-| `CONHECIMENTO_ENVIOS_POR_HORA` | `30` | Limite de envios por pessoa. |
+| `CONHECIMENTO_ENVIOS_POR_HORA` | `30` | Limite de envios de arquivos por pessoa, por hora. |
+| `CONHECIMENTO_AVALIACOES_POR_HORA` | `60` | Limite de avaliações do chat (👍/👎) que viram envios, por pessoa, por hora. |
 
 O conversor aceita `OCR_IDIOMAS` (padrão `por+eng`), `CONVERSOES_SIMULTANEAS` (padrão `2`), `CONVERSOR_TIMEOUT_OFFICE` (180 s) e `CONVERSOR_TIMEOUT_OCR` (900 s).
 

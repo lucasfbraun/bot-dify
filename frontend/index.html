@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=5">
+  <link rel="stylesheet" href="/assets/app.css?v=6">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -178,6 +178,14 @@
         <div id="conh-aprovados" hidden>
           <form class="filtros" id="filtros-aprovados">
             <div><label for="apr-agente">Agente</label><select id="apr-agente"></select></div>
+            <div><label for="apr-origem">Tipo</label>
+              <select id="apr-origem">
+                <option value="">Todos</option>
+                <option value="arquivo">Arquivos</option>
+                <option value="feedback_positivo">Respostas validadas (👍)</option>
+                <option value="feedback_negativo">Correções (👎)</option>
+              </select>
+            </div>
             <div><label for="apr-usuario">Enviado por</label><input id="apr-usuario" list="lista-logins" placeholder="Todos" autocomplete="off" spellcheck="false"></div>
             <div><label for="apr-status">Situação</label>
               <select id="apr-status">
@@ -400,6 +408,24 @@
     </div>
   </dialog>
 
+  <!-- modal: corrigir uma resposta avaliada com 👎 -->
+  <dialog id="dlg-correcao" class="dialogo dialogo-largo">
+    <form method="dialog" class="dialogo-corpo" id="form-correcao" novalidate>
+      <h3>Quer ajudar com a resposta certa?</h3>
+      <p class="muted dica">A sua avaliação já foi para aprovação. Se souber a resposta certa, escreva abaixo (opcional): ela ajuda o aprovador, e, se aprovada, o agente passa a usá-la em perguntas parecidas. Sem correção, o aprovador escreve a resposta.</p>
+      <details class="correcao-original"><summary>Resposta do agente</summary><div class="md" id="correcao-original"></div></details>
+      <label for="correcao-texto">Resposta correta</label>
+      <textarea id="correcao-texto" rows="6" maxlength="8000" placeholder="Ex.: A densidade do FLEXX AG 2032 é 32 kg/m³ (norma NBR 8537), e não 28 kg/m³."></textarea>
+      <label for="correcao-comentario">Observação para o aprovador (opcional)</label>
+      <input id="correcao-comentario" maxlength="1000" placeholder="Ex.: conferido na ficha técnica revisão 3">
+      <p id="correcao-erro" class="erro" role="alert" hidden></p>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel" formnovalidate>Agora não</button>
+        <button class="btn btn-primario" id="correcao-enviar" type="submit">Enviar correção</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- modal: chave de conhecimento do Dify -->
   <dialog id="dlg-chave-conh" class="dialogo">
     <form method="dialog" class="dialogo-corpo" id="form-chave-conh" novalidate>
@@ -437,6 +463,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=5" type="module"></script>
+  <script src="/assets/app.js?v=6" type="module"></script>
 </body>
 </html>
