@@ -1487,10 +1487,10 @@ function abrirDialogoAgente(a = null) {
   $('#agente-descricao').value = editar ? a.descricao || '' : '';
   $('#agente-sugestoes').value = editar ? sugestoesParaTexto(a.sugestoes) : '';
   $('#agente-recebe').checked = !!a?.recebe_conhecimento;
+  carregarBasesNoDialogo(a);
   $('#agente-autoaprovacao').checked = a ? !!a.autoaprovacao : true;
-  $('#agente-conh-dica').innerHTML = a?.dataset_id
-    ? `Base no Dify: <b>Colaborativo - ${esc(a.nome)}</b>. Ela precisa estar ligada a este agente no Dify (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar).`
-    : 'Ao ligar, a plataforma cria no Dify a base <b>Colaborativo - nome do agente</b>. Depois, ligue essa base ao agente no Dify (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar).';
+  $('#agente-conh-dica').innerHTML = 'Escolha uma base que você já criou no Dify (por exemplo, <b>Feedback</b>) ou deixe a plataforma criar uma nova. '
+    + 'Depois, no Dify, adicione essa base ao agente (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar). Nunca use a base de Quarentena.';
   $('#agente-erro').hidden = true;
   $('#agente-salvar').disabled = false;
   $('#agente-salvar').textContent = editar ? 'Salvar' : 'Verificar e cadastrar';
@@ -1512,6 +1512,7 @@ async function salvarAgente(e) {
     if (!nome) { erro.textContent = 'Informe o nome do agente.'; erro.hidden = false; return; }
     corpo = { nome, descricao: $('#agente-descricao').value.trim(), sugestoes: textoParaSugestoes($('#agente-sugestoes').value),
       recebe_conhecimento: $('#agente-recebe').checked, autoaprovacao: $('#agente-autoaprovacao').checked };
+    if ($('#agente-base').value && $('#agente-base').value !== (a.dataset_id || '')) corpo.dataset_id = $('#agente-base').value;
     if (chave) corpo.chave = chave;
   } else {
     if (!chave) { erro.textContent = 'Cole a chave da API do Dify (começa com app-).'; erro.hidden = false; return; }
@@ -1525,8 +1526,9 @@ async function salvarAgente(e) {
       ? await enviarJSON(`/api/admin/agentes/${a.id}`, 'PATCH', corpo)
       : await enviarJSON('/api/admin/agentes', 'POST', corpo);
     $('#dlg-agente').close();
-    const ligouAgora = a && !a.recebe_conhecimento && r.recebe_conhecimento;
-    toast(ligouAgora ? `Base "Colaborativo - ${r.nome}" criada no Dify. Ligue-a ao agente no Dify (Conhecimento > Adicionar > Publicar) e marque os aprovadores na aba Usuários.`
+    const ligouAgora = a && r.recebe_conhecimento && r.dataset_id && r.dataset_id !== a.dataset_id;
+    const nomeBase = basesDify.find((b) => b.id === r.dataset_id)?.nome || `Colaborativo - ${r.nome}`;
+    toast(ligouAgora ? `Base "${nomeBase}" ligada a este agente. No Dify, adicione essa base ao agente (Conhecimento > Adicionar > Publicar) e marque os aprovadores na aba Usuários.`
       : a ? 'Agente atualizado.' : `"${r.nome}" cadastrado. Administradores já têm acesso; libere para os demais na aba Usuários.`, ligouAgora ? 12000 : 6000);
     if (a) carregarBaseConhecimento();
     carregarAgentesAdmin();
@@ -2304,6 +2306,32 @@ function botaoAprovaUsuario(u) {
   const texto = nomes.length ? `Aprova: ${nomes.length === 1 ? nomes[0] : `${nomes.length} agentes`}` : 'Não aprova';
   return `<button type="button" class="btn-agentes btn-aprova${nomes.length ? ' marcado' : ''}" title="${esc(nomes.length ? `Aprova conhecimento de: ${nomes.join(', ')}` : 'Não aprova conhecimento de nenhum agente')}"
     aria-label="Aprovações de ${esc(u.username)}: ${esc(texto)}"${estado.adminAgentes.length ? '' : ' disabled'}>${esc(texto)}</button>`;
+}
+
+/* ---- diálogo do agente: escolher a base de conhecimento do Dify ---- */
+let basesDify = [];
+
+async function carregarBasesNoDialogo(a) {
+  const sel = $('#agente-base');
+  const atual = a?.dataset_id || '';
+  $('#agente-base-campo').hidden = !a;
+  sel.innerHTML = `<option value="">Criar uma base nova: "Colaborativo - ${esc(a?.nome || 'nome do agente')}"</option>`;
+  if (!a) return;
+  try {
+    basesDify = (await getJSON('/api/admin/conhecimento/bases')).itens;
+  } catch (e) {
+    basesDify = [];
+    sel.innerHTML += `<option value="" disabled>(${esc(e.message)})</option>`;
+  }
+  for (const b of basesDify) {
+    const outros = b.agentes.filter((n) => n !== a.nome);
+    const o = document.createElement('option');
+    o.value = b.id;
+    o.textContent = `${b.nome}${b.documentos != null ? ` · ${b.documentos} documento${b.documentos === 1 ? '' : 's'}` : ''}${outros.length ? ` · usada por ${outros.join(', ')}` : ''}`;
+    sel.appendChild(o);
+  }
+  if (atual && !basesDify.some((b) => b.id === atual)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(atual)}">(base atual, não listada)</option>`);
+  sel.value = atual;
 }
 
 /* ---- correção de resposta (👎) ---- */

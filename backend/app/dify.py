@@ -231,3 +231,16 @@ async def documento_baixar(dataset_id: str, documento_id: str) -> tuple[bytes, s
     if arq.status_code >= 400:
         raise DifyErro(arq.status_code, "Não foi possível baixar o arquivo do Dify.")
     return arq.content, arq.headers.get("content-type", "application/octet-stream")
+
+
+async def bases_listar() -> list[dict]:
+    """Todas as bases de conhecimento do workspace (include_all: também as criadas com permissão "só eu")."""
+    bases, pagina = [], 1
+    while pagina <= 50:
+        r = await _get(_ds(), "/datasets", {"page": pagina, "limit": 100, "include_all": "true"})
+        dados = r.get("data") or []
+        bases += dados
+        if not r.get("has_more") or not dados:
+            break
+        pagina += 1
+    return bases

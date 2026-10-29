@@ -681,7 +681,9 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
                 conteudo = f.read()
         nome = e["enviado_nome"] or e["arquivo_nome"]
         mime = TIPOS.get(nome.rsplit(".", 1)[-1].lower(), ("application/octet-stream",))[0]
-        r = await dify.documento_enviar(ag["dataset_id"], nome, conteudo, mime)
+        base = await dify.base_info(ag["dataset_id"])
+        r = await dify.documento_enviar(ag["dataset_id"], nome, conteudo, mime,
+                                        None if base.get("indexing_technique") else "high_quality")
     except Exception as erro:  # noqa: BLE001
         db.mudar_status_envio(envio_id, ("publicando",), "pendente")
         motivo = erro.mensagem if isinstance(erro, dify.DifyErro) else type(erro).__name__
@@ -1026,3 +1028,51 @@ async def corrigir_resposta(dados: CorrecaoIn, user: dict = Depends(usuario_atua
                            message_id=dados.message_id, conversation_id=dados.conversation_id, pergunta=pergunta[:8000],
                            resposta_original=original[:20000], resposta_corrigida=correcao)
     return _publico(e, user)
+
+
+# ------------------------------------------------------------------ escolher uma base que já existe no Dify
+RX_UUID = re.compile(r"[0-9a-fA-F-]{32,36}")
+
+
+@router.get("/api/admin/conhecimento/bases")
+async def bases_do_dify(admin: dict = Depends(exigir_admin)):
+    """Bases do Dify para o admin escolher em qual o conhecimento aprovado de cada agente entra."""
+    _exigir_chave_ds()
+    try:
+        bases = await dify.bases_listar()
+    except dify.DifyErro as e:
+        raise HTTPException(502, f"O Dify não listou as bases ({e.mensagem}).")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Não foi possível falar com o Dify.")
+    quarentena = db.get_meta("quarentena_dataset")
+    em_uso: dict[str, list[str]] = {}
+    for a in db.list_agentes():
+        if a.get("dataset_id"):
+            em_uso.setdefault(a["dataset_id"], []).append(a["nome"])
+    return {"itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
+                       "tecnica": b.get("indexing_technique"), "agentes": em_uso.get(b["id"], [])}
+                      for b in bases if b.get("id") != quarentena and b.get("provider", "vendor") != "external"]}
+
+
+async def validar_base(dataset_id: str) -> str:
+    """Confere se a base escolhida existe no Dify e pode receber conhecimento (nunca a quarentena)."""
+    _exigir_chave_ds()
+    dataset_id = dataset_id.strip()
+    if not RX_UUID.fullmatch(dataset_id):
+        raise HTTPException(400, "Base de conhecimento inválida.")
+    if dataset_id == db.get_meta("quarentena_dataset"):
+        raise HTTPException(400, "A base de quarentena não pode receber conhecimento aprovado.")
+    try:
+        base = await dify.base_info(dataset_id)
+    except dify.DifyErro as e:
+        raise HTTPException(400, "Essa base não foi encontrada no Dify (ou a chave não tem acesso a ela)."
+                            if e.status in (403, 404) else f"O Dify não respondeu como esperado ({e.mensagem}).")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Não foi possível falar com o Dify.")
+    if base.get("provider") == "external":
+        raise HTTPException(400, "Bases externas não recebem arquivos.")
+    try:
+        await garantir_quarentena()
+    except (dify.DifyErro, httpx.HTTPError):
+        raise HTTPException(502, "Não foi possível criar a base de quarentena no Dify.")
+    return dataset_id

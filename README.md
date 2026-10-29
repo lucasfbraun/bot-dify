@@ -160,8 +160,12 @@ Depois que o Dify processa, a plataforma conta quanto texto saiu e avisa o aprov
 1. **Chave de conhecimento do Dify**: no Dify, abra **Conhecimento → API** (canto superior direito) → **Chave da API** → **Criar nova chave**. Na plataforma: **Administração → Agentes → Envio de conhecimento pelos usuários → Cadastrar chave**. A plataforma testa a chave antes de salvar; ela fica só no servidor e aparece mascarada.
    - Use a **chave geral de conhecimento do workspace**. Chaves restritas a bases específicas não conseguem criar bases, e a plataforma precisa criar a base de cada agente e a quarentena.
    - Também dá para usar `DIFY_DATASET_API_KEY` no `.env`; a chave cadastrada na tela tem prioridade.
-2. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"**. A plataforma cria no Dify a base **Colaborativo - Nome do agente** (alta qualidade, com embeddings) e, na primeira vez, a base **Quarentena - envios para aprovação** (modo econômico).
-3. **Ligar a base ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar → Colaborativo - Nome do agente** → **Publicar**. **Nunca** ligue a base de Quarentena a nenhum agente.
+2. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"** e, no campo **"Base de conhecimento onde entra o que for aprovado"**, escolha:
+   - **uma base que você já criou no Dify** (por exemplo, **Feedback**). A lista mostra todas as bases do workspace, com o número de documentos e qual agente já usa cada uma. A base pode estar vazia: se ainda não tiver tipo de indexação, o primeiro documento aprovado entra em alta qualidade (com embeddings); ou
+   - **"Criar uma base nova"**: a plataforma cria no Dify a base **Colaborativo - Nome do agente** (alta qualidade).
+
+   Na primeira vez, a plataforma também cria a base **Quarentena - envios para aprovação** (modo econômico), que nunca aparece na lista para escolha. Dá para trocar a base depois: os próximos conhecimentos aprovados entram na nova, e os que já foram aprovados continuam na base em que entraram (e continuam podendo ser desativados ou excluídos pelo admin).
+3. **Ligar a base ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar →** a base escolhida (por exemplo, **Feedback**) → **Publicar**. **Nunca** ligue a base de Quarentena a nenhum agente.
 4. **Marcar os aprovadores**: **Administração → Usuários → botão "Não aprova"/"Aprova: …"** na linha da pessoa → marque os agentes.
 5. **Autoaprovação**: no mesmo diálogo do agente, **"Permitir que o aprovador aprove o próprio envio"** (vem ligada). Desligada, o envio de um aprovador espera outro aprovador do mesmo agente.
 

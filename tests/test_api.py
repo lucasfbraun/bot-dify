@@ -750,6 +750,33 @@ secao("conversas de quem foi removido continuam visíveis")
 ok(adm.delete("/api/admin/usuarios/maria.silva").status_code == 200, "remove a maria")
 r = adm.get("/api/admin/conversas", params={"agente": COM2}).json()["itens"]
 ok(any(c["id"] == cid_maria and c["usuario"] == "maria.silva" for c in r), "conversa dela ainda aparece (pelo histórico de uso)")
+secao("base de conhecimento escolhida pelo admin (ex.: 'Feedback' criada no Dify)")
+feedback_base = httpx.post(f"{FAKE}/v1/datasets", headers={"Authorization": f"Bearer {CHAVE_CONHECIMENTO}"},
+                           json={"name": "Feedback"}).json()  # criada vazia pela tela do Dify: sem tipo de indexação ainda
+FB = feedback_base["id"]
+bases_lista = adm.get("/api/admin/conhecimento/bases").json()["itens"]
+ok(any(b["id"] == FB and b["nome"] == "Feedback" for b in bases_lista), "lista as bases do Dify (inclui a Feedback)")
+ok(not any(b["id"] == quarentena["id"] for b in bases_lista), "a quarentena não aparece para escolha")
+ok(any(b["id"] == DS_PU and "PU (completo)" in b["agentes"] for b in bases_lista), "mostra qual agente usa cada base")
+ok(anon.get("/api/admin/conhecimento/bases").status_code == 401, "sem sessão não lista bases")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": "nao-e-uuid"}).status_code == 400, "base inválida -> 400")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": quarentena["id"]}).status_code == 400, "quarentena não pode ser escolhida -> 400")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": "11111111-1111-1111-1111-111111111111"}).status_code == 400,
+   "base que não existe no Dify -> 400")
+r = adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": FB})
+ok(r.status_code == 200 and r.json()["dataset_id"] == FB, "PU passa a usar a base Feedback")
+adm.patch(f"/api/admin/agentes/{PU}", json={"autoaprovacao": True})  # a maria já foi removida: o admin decide o próprio
+code, ef = conversar(adm, PU, "Pergunta que vai para a base Feedback")
+mf = [x for x in ef if x["t"] == "fim"][0]["message_id"]
+vf = adm.post(f"/api/agentes/{PU}/mensagens/{mf}/feedback", json={"avaliacao": "like", "conversation_id": ef[0]["conversation_id"]}).json()["envio"]
+esperar(adm, vf["id"])
+ok(adm.post(f"/api/conhecimento/envios/{vf['id']}/aprovar", json={"motivo": ""}).json()["status"] == "aprovado", "aprova")
+docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
+ok(any(d["base"] == FB and d["name"] == f"resposta-validada-{mf[:8]}.md" for d in docs.values()),
+   "aprovado entra na base Feedback (mesmo criada vazia, sem tipo de indexação)")
+r = adm.post(f"/api/conhecimento/envios/{ENV_POS}/desativar", json={"motivo": "teste de base antiga"})
+ok(r.status_code == 200 and r.json()["status"] == "desativado", "conhecimento antigo continua administrável na base em que entrou")
+
 secao("agente removido não deixa envios órfãos")
 code, e4 = conversar(adm, PU, "Pergunta antes de remover o agente")
 m4 = [x for x in e4 if x["t"] == "fim"][0]["message_id"]

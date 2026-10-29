@@ -293,7 +293,11 @@ def _texto_do_arquivo(nome: str, dados: bytes) -> str:
 async def bases_listar(req: Request):
     if not _ds(req):
         return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
-    return {"data": list(BASES.values())[:1], "has_more": False, "total": len(BASES)}
+    page, limit = int(req.query_params.get("page", 1)), min(int(req.query_params.get("limit", 20)), 100)
+    todas = [{**b, "document_count": sum(1 for d in DOCS.values() if d["base"] == b["id"]), "provider": "vendor"}
+             for b in BASES.values()]
+    ini = (page - 1) * limit
+    return {"data": todas[ini:ini + limit], "has_more": ini + limit < len(todas), "total": len(todas), "page": page}
 
 
 @app.post("/v1/datasets")
