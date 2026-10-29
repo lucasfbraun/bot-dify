@@ -185,8 +185,8 @@ async def base_criar(nome: str, descricao: str, tecnica: str) -> dict:
                                                     "indexing_technique": tecnica, "permission": "only_me"})
 
 
-async def base_info(dataset_id: str) -> dict:
-    return await _get(_ds(), f"/datasets/{dataset_id}", {})
+async def base_info(dataset_id: str, chave: str | None = None) -> dict:
+    return await _get(chave or _ds(), f"/datasets/{dataset_id}", {})
 
 
 async def documento_enviar(dataset_id: str, nome: str, dados: bytes, mime: str, tecnica: str | None = None) -> dict:

@@ -387,8 +387,7 @@ estado_dify = httpx.get(f"{FAKE}/teste/docs").json()
 bases = {b["name"]: b for b in estado_dify["bases"].values()}
 colab = next((b for b in bases.values() if b["name"].startswith("Colaborativo - PU")), None)
 ok(colab and colab["indexing_technique"] == "high_quality", "base colaborativa criada no Dify com o nome do agente (alta qualidade)")
-quarentena = next((b for b in bases.values() if b["name"].startswith("Quarentena")), None)
-ok(quarentena and quarentena["indexing_technique"] == "economy", "quarentena criada em modo econômico (sem custo de embeddings)")
+ok(not any(b["name"].startswith("Quarentena") for b in bases.values()), "nenhuma base de quarentena no Dify (a quarentena é local)")
 DS_PU = r.json()["dataset_id"]
 ok(adm.patch(f"/api/admin/agentes/{PU}", json={"recebe_conhecimento": True}).json()["dataset_id"] == DS_PU, "religar não cria outra base")
 
@@ -456,28 +455,33 @@ ok(e["status"] == "pendente" and e["trechos"] >= 1 and e["caracteres"] > 300, f"
 tipos_alerta = {a["tipo"]: a for a in e["alertas"]}
 ok("injecao" in tipos_alerta and tipos_alerta["injecao"]["nivel"] == "alto" and "instruções anteriores" in tipos_alerta["injecao"]["exemplos"][0],
    "alerta de instrução para manipular o agente, com o trecho")
-ok("dados_pessoais" in tipos_alerta and "CPF" in tipos_alerta["dados_pessoais"]["detalhe"] and cpf_valido not in json.dumps(tipos_alerta),
+ok("dados_pessoais" in tipos_alerta and "CPF" in tipos_alerta["dados_pessoais"]["detalhe"] and cpf_valido not in json.dumps(tipos_alerta["dados_pessoais"]),
    "alerta de dados pessoais (CPF mascarado no alerta)")
 ok("senha" in tipos_alerta["dados_pessoais"]["detalhe"], "palavra sensível (senha) apontada")
 docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
-ok(any(d["base"] == quarentena["id"] for d in docs.values()), "arquivo está na quarentena")
+ok(not any(d["name"] == "procedimento.txt" for d in docs.values()), "quarentena local: o arquivo não chega ao Dify antes da aprovação")
 ok(not any(d["base"] == DS_PU for d in docs.values()), "nada entrou na base do agente antes da aprovação")
 
 r = enviar(maria, "apresentacao.pptx", ooxml("ppt/presentation.xml"))
 E_PPT = r.json()["id"]
 e = esperar(maria, E_PPT)
 ok(e["status"] == "pendente" and e["convertido"] == 1 and e["ocr"] == "aplicado" and e["enviado_nome"] == "apresentacao.pdf",
-   "PPTX convertido para PDF com OCR antes da quarentena")
+   "PPTX convertido para PDF com OCR")
 r = enviar(maria, "sem-imagem.docx", ooxml("word/document.xml"))
 e_docx = esperar(maria, r.json()["id"])
 r = enviar(maria, "com-imagem.docx", ooxml("word/document.xml", {"word/media/image1.png": "png"}))
 e_docx_img = esperar(maria, r.json()["id"])
 ok(e_docx["convertido"] == 0 and e_docx_img["convertido"] == 1, "DOCX sem imagem vai direto; com imagem passa pelo OCR")
 chamadas = httpx.get("http://127.0.0.1:8098/teste/chamadas").json()["itens"]
-ok("apresentacao.pptx" in chamadas and "com-imagem.docx" in chamadas and "sem-imagem.docx" not in chamadas, "conversor chamado só quando precisa")
+ok("apresentacao.pptx" in chamadas and "com-imagem.docx" in chamadas and "sem-imagem.docx" in chamadas,
+   "conversor lê o texto de todos (o DOCX sem imagem só para a prévia; vai original para o Dify)")
+ok(e_docx["trechos"] >= 1 and e_docx["enviado_nome"] == "sem-imagem.docx", "DOCX sem imagem tem prévia e vai como está")
 r = enviar(maria, "relatorio-ERRO.txt", b"conteudo qualquer " * 50)
-e_erro = esperar(maria, r.json()["id"])
-ok(e_erro["status"] == "erro" and "processar" in (e_erro["erro"] or ""), f"falha no Dify vira status erro ({e_erro['erro']})")
+E_ERRO = r.json()["id"]
+ok(esperar(maria, E_ERRO)["status"] == "pendente", "arquivo que o Dify não vai conseguir ler também espera a aprovação (nada vai antes)")
+r = enviar(maria, "corrompido.pptx", ooxml("ppt/presentation.xml", {"ppt/slides/slide1.xml": "<s/>"}))
+e_corr = esperar(maria, r.json()["id"])
+ok(e_corr["status"] == "erro" and "conversão" in (e_corr["erro"] or ""), f"falha na conversão vira status erro ({e_corr['erro']})")
 r = enviar(maria, "pouco.txt", b"oi tudo bem")
 e_pouco = esperar(maria, r.json()["id"])
 ok(any(a["tipo"] == "pouco_texto" for a in e_pouco["alertas"]), "pouco texto extraído gera alerta")
@@ -507,7 +511,7 @@ r = adm.post(f"/api/conhecimento/envios/{E_TXT}/rejeitar", json={"motivo": "Cont
 ok(r.status_code == 200 and r.json()["status"] == "rejeitado", "rejeitado com motivo")
 ok(maria.get(f"/api/conhecimento/envios/{E_TXT}").json()["motivo"].startswith("Contém"), "quem enviou vê o motivo")
 docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
-ok(not any(d["name"] == "procedimento.txt" for d in docs.values()), "rejeitado sai da quarentena")
+ok(not any(d["name"] == "procedimento.txt" for d in docs.values()), "rejeitado nunca chegou ao Dify")
 ok(adm.get(f"/api/conhecimento/envios/{E_TXT}/arquivo", params={"qual": "original"}).status_code == 404, "arquivo rejeitado apagado do servidor")
 ok(adm.post(f"/api/conhecimento/envios/{E_TXT}/aprovar", json={}).status_code == 409, "não dá para aprovar depois de rejeitado")
 
@@ -518,7 +522,7 @@ ok(adm.post(f"/api/conhecimento/envios/{E_PPT}/aprovar", json={}).status_code ==
 docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
 destino = [d for d in docs.values() if d["base"] == DS_PU]
 ok(len(destino) == 1 and destino[0]["name"] == "apresentacao.pdf", "PDF convertido entrou na base colaborativa do agente")
-ok(not any(d["base"] == quarentena["id"] and d["name"] == "apresentacao.pdf" for d in docs.values()), "e saiu da quarentena")
+ok(sum(1 for d in docs.values() if d["name"] == "apresentacao.pdf") == 1, "uma cópia só no Dify (a da base do agente)")
 ok(adm.get(f"/api/conhecimento/envios/{E_PPT}/trechos").json()["itens"][0]["texto"].startswith("Texto convertido"),
    "trechos agora vêm da base do agente")
 r = adm.get(f"/api/conhecimento/envios/{E_PPT}/arquivo")
@@ -563,7 +567,16 @@ e_c = esperar(maria, r.json()["id"])
 ok(adm.post(f"/api/conhecimento/envios/{e_c['id']}/cancelar").status_code == 403, "só quem enviou cancela")
 ok(maria.post(f"/api/conhecimento/envios/{e_c['id']}/cancelar").json()["status"] == "cancelado", "quem enviou cancela o pendente")
 docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
-ok(not any(d["name"] == "cancelar.txt" for d in docs.values()), "cancelado sai da quarentena")
+ok(not any(d["name"] == "cancelar.txt" for d in docs.values()), "cancelado nunca chegou ao Dify")
+r = adm.post(f"/api/conhecimento/envios/{E_ERRO}/aprovar", json={"motivo": ""})
+ok(r.status_code == 200 and r.json()["status"] == "aprovado", "aprova o arquivo que o Dify não vai conseguir ler")
+for _ in range(30):
+    e_erro = adm.get(f"/api/conhecimento/envios/{E_ERRO}").json()
+    if e_erro["erro"]:
+        break
+    _t.sleep(0.3)
+ok((e_erro["erro"] or "").startswith("Aprovado, mas") and "não conseguiu processar" in e_erro["erro"],
+   f"falha do Dify depois da aprovação aparece no envio ({e_erro['erro']})")
 
 secao("conhecimento: registros de aprovação")
 regs = adm.get("/api/conhecimento/registros").json()["itens"]
@@ -756,11 +769,10 @@ feedback_base = httpx.post(f"{FAKE}/v1/datasets", headers={"Authorization": f"Be
 FB = feedback_base["id"]
 bases_lista = adm.get("/api/admin/conhecimento/bases").json()["itens"]
 ok(any(b["id"] == FB and b["nome"] == "Feedback" for b in bases_lista), "lista as bases do Dify (inclui a Feedback)")
-ok(not any(b["id"] == quarentena["id"] for b in bases_lista), "a quarentena não aparece para escolha")
+ok(bases_lista and all(not b["nome"].startswith("Quarentena") for b in bases_lista), "nenhuma quarentena na lista")
 ok(any(b["id"] == DS_PU and "PU (completo)" in b["agentes"] for b in bases_lista), "mostra qual agente usa cada base")
 ok(anon.get("/api/admin/conhecimento/bases").status_code == 401, "sem sessão não lista bases")
 ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": "nao-e-uuid"}).status_code == 400, "base inválida -> 400")
-ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": quarentena["id"]}).status_code == 400, "quarentena não pode ser escolhida -> 400")
 ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": "11111111-1111-1111-1111-111111111111"}).status_code == 400,
    "base que não existe no Dify -> 400")
 r = adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": FB})
@@ -777,6 +789,27 @@ ok(any(d["base"] == FB and d["name"] == f"resposta-validada-{mf[:8]}.md" for d i
 r = adm.post(f"/api/conhecimento/envios/{ENV_POS}/desativar", json={"motivo": "teste de base antiga"})
 ok(r.status_code == 200 and r.json()["status"] == "desativado", "conhecimento antigo continua administrável na base em que entrou")
 
+secao("chave restrita a uma base só (Feedback)")
+httpx.post(f"{FAKE}/teste/vincular", json={"base": FB})
+r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA})
+ok(r.status_code == 400 and "ID da base" in r.json()["detail"], "chave restrita sem o ID da base -> 400 explicando onde achar")
+r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": DS_PU})
+ok(r.status_code == 400 and "não tem acesso" in r.json()["detail"], "ID de outra base -> 400")
+r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": FB})
+cfg = r.json()
+ok(r.status_code == 200 and cfg["restrita"] == FB and cfg["restrita_nome"] == "Feedback", "chave restrita aceita, presa à base Feedback")
+lb = adm.get("/api/admin/conhecimento/bases").json()
+ok(lb["pode_criar"] is False and [b["id"] for b in lb["itens"]] == [FB], "lista só a base da chave (sem 'criar nova')")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": DS_PU}).status_code == 400, "não deixa escolher outra base")
+code, er = conversar(adm, PU, "Pergunta com a chave restrita")
+mr = [x for x in er if x["t"] == "fim"][0]["message_id"]
+vr = adm.post(f"/api/agentes/{PU}/mensagens/{mr}/feedback", json={"avaliacao": "like", "conversation_id": er[0]["conversation_id"]}).json()["envio"]
+esperar(adm, vr["id"])
+ok(adm.post(f"/api/conhecimento/envios/{vr['id']}/aprovar", json={"motivo": ""}).json()["status"] == "aprovado", "aprova com a chave restrita")
+docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
+ok(any(d["base"] == FB and d["name"] == f"resposta-validada-{mr[:8]}.md" for d in docs.values()), "entra na base Feedback")
+ok(adm.get(f"/api/conhecimento/envios/{vr['id']}/trechos").json()["itens"], "trechos do aprovado lidos da Feedback com a chave restrita")
+
 secao("agente removido não deixa envios órfãos")
 code, e4 = conversar(adm, PU, "Pergunta antes de remover o agente")
 m4 = [x for x in e4 if x["t"] == "fim"][0]["message_id"]
@@ -784,8 +817,7 @@ v4 = adm.post(f"/api/agentes/{PU}/mensagens/{m4}/feedback", json={"avaliacao": "
 esperar(adm, v4["id"])
 ok(adm.delete(f"/api/admin/agentes/{PU}").status_code == 200, "remove o agente PU")
 ok(adm.get(f"/api/conhecimento/envios/{v4['id']}").json()["status"] == "cancelado", "envio pendente dele é cancelado")
-docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
-ok(not any(d["base"] == quarentena["id"] and d["name"] == f"resposta-validada-{m4[:8]}.md" for d in docs.values()), "e sai da quarentena")
+ok(adm.get(f"/api/conhecimento/envios/{v4['id']}/trechos").status_code == 409, "e o conteúdo local é apagado")
 
 print("\nfalhas:", falhas)
 sys.exit(1 if falhas else 0)

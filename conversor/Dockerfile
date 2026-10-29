@@ -10,7 +10,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      libreoffice-writer-nogui libreoffice-impress-nogui \
+      libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui \
       ocrmypdf tesseract-ocr-por tesseract-ocr-eng \
       fonts-dejavu fonts-liberation fonts-crosextra-carlito fonts-crosextra-caladea \
  && rm -rf /var/lib/apt/lists/*

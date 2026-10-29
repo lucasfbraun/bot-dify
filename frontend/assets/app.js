@@ -1489,8 +1489,9 @@ function abrirDialogoAgente(a = null) {
   $('#agente-recebe').checked = !!a?.recebe_conhecimento;
   carregarBasesNoDialogo(a);
   $('#agente-autoaprovacao').checked = a ? !!a.autoaprovacao : true;
-  $('#agente-conh-dica').innerHTML = 'Escolha uma base que você já criou no Dify (por exemplo, <b>Feedback</b>) ou deixe a plataforma criar uma nova. '
-    + 'Depois, no Dify, adicione essa base ao agente (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar). Nunca use a base de Quarentena.';
+  $('#agente-conh-dica').innerHTML = 'Escolha a base do Dify onde entra o que for aprovado (por exemplo, <b>Feedback</b>). '
+    + 'Depois, no Dify, adicione essa base ao agente (Agente &gt; Conhecimento &gt; Adicionar &gt; Publicar). '
+    + 'Enquanto esperam a aprovação, os envios ficam só nesta plataforma: nada chega ao Dify antes de aprovado.';
   $('#agente-erro').hidden = true;
   $('#agente-salvar').disabled = false;
   $('#agente-salvar').textContent = editar ? 'Salvar' : 'Verificar e cadastrar';
@@ -2263,7 +2264,7 @@ async function carregarConfigConhecimento() {
   try {
     const c = await getJSON('/api/admin/conhecimento/config');
     $('#conh-config-status').textContent = c.chave_configurada
-      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
+      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}${c.restrita ? `, restrita à base "${c.restrita_nome || c.restrita}"` : ', acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
       : 'Falta cadastrar a chave de API de Conhecimento do Dify para os agentes poderem receber arquivos.';
     $('#btn-chave-conh').textContent = c.chave_configurada ? 'Trocar chave' : 'Cadastrar chave';
     $('#cartao-conhecimento').classList.toggle('pendente', !c.chave_configurada);
@@ -2274,6 +2275,7 @@ async function carregarConfigConhecimento() {
 
 function abrirChaveConhecimento() {
   $('#chave-conh').value = '';
+  $('#chave-conh-base').value = '';
   $('#chave-conh-erro').hidden = true;
   $('#dlg-chave-conh').showModal();
   setTimeout(() => $('#chave-conh').focus(), 30);
@@ -2288,7 +2290,7 @@ async function salvarChaveConhecimento(e) {
   btn.disabled = true;
   btn.textContent = 'Testando no Dify…';
   try {
-    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim() });
+    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim(), base_id: $('#chave-conh-base').value.trim() });
     $('#dlg-chave-conh').close();
     toast('Chave de conhecimento salva.');
     carregarConfigConhecimento();
@@ -2317,12 +2319,16 @@ async function carregarBasesNoDialogo(a) {
   $('#agente-base-campo').hidden = !a;
   sel.innerHTML = `<option value="">Criar uma base nova: "Colaborativo - ${esc(a?.nome || 'nome do agente')}"</option>`;
   if (!a) return;
+  let podeCriar = true;
   try {
-    basesDify = (await getJSON('/api/admin/conhecimento/bases')).itens;
+    const r = await getJSON('/api/admin/conhecimento/bases');
+    basesDify = r.itens;
+    podeCriar = r.pode_criar !== false;
   } catch (e) {
     basesDify = [];
     sel.innerHTML += `<option value="" disabled>(${esc(e.message)})</option>`;
   }
+  if (!podeCriar) sel.innerHTML = '';  // chave restrita: só a base da chave
   for (const b of basesDify) {
     const outros = b.agentes.filter((n) => n !== a.nome);
     const o = document.createElement('option');
@@ -2331,7 +2337,7 @@ async function carregarBasesNoDialogo(a) {
     sel.appendChild(o);
   }
   if (atual && !basesDify.some((b) => b.id === atual)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(atual)}">(base atual, não listada)</option>`);
-  sel.value = atual;
+  sel.value = atual || (!podeCriar && basesDify[0] ? basesDify[0].id : '');
 }
 
 /* ---- correção de resposta (👎) ---- */

@@ -7,6 +7,7 @@ pouco texto) -> um aprovador do agente aprova (o arquivo vai para a base colabor
 Só administradores desativam, reativam ou excluem um conhecimento aprovado. Tudo fica no registro de aprovação.
 """
 import asyncio
+import base64
 import csv
 import hashlib
 import io
@@ -219,9 +220,10 @@ def analisar(textos: list[str], info: dict) -> tuple[list[dict], int]:
     if info.get("ocr") == "falhou":
         alertas.append({"tipo": "ocr", "nivel": "medio", "titulo": "OCR não foi aplicado",
                         "detalhe": "O texto que está dentro de imagens pode ter ficado de fora.", "exemplos": []})
-    if info.get("sem_conversor"):
-        alertas.append({"tipo": "ocr", "nivel": "info", "titulo": "PDF enviado sem OCR",
-                        "detalhe": "O conversor não está configurado; só o texto digital do PDF foi lido.", "exemplos": []})
+    if info.get("sem_conversor") or info.get("sem_previa"):
+        alertas.append({"tipo": "ocr", "nivel": "medio", "titulo": "Sem prévia do texto",
+                        "detalhe": "O conversor não está configurado: não foi possível ler o texto para conferir aqui "
+                                   "(e o PDF vai sem OCR). Abra o arquivo antes de aprovar.", "exemplos": []})
     if info.get("imagens_planilha"):
         alertas.append({"tipo": "ocr", "nivel": "info", "titulo": "Imagens não lidas",
                         "detalhe": "Planilhas vão direto para o Dify; textos dentro de imagens não são lidos.", "exemplos": []})
@@ -252,29 +254,21 @@ def _exigir_chave_ds():
                                  "Conhecimento (no Dify: Conhecimento > API > Criar chave).")
 
 
-_trava_quarentena = asyncio.Lock()
-
-
-async def garantir_quarentena(recriar: bool = False) -> str:
-    async with _trava_quarentena:
-        atual = db.get_meta("quarentena_dataset")
-        if atual and not recriar:
-            return atual
-        base = await dify.base_criar("Quarentena - envios para aprovação",
-                                     "Arquivos aguardando aprovação na plataforma de agentes. NÃO ligue esta base a "
-                                     "nenhum agente.", "economy")
-        db.set_meta("quarentena_dataset", base["id"])
-        log.info("base de quarentena criada no Dify: %s", base["id"])
-        return base["id"]
+# ------------------------------------------------------------------ chave de conhecimento: geral ou restrita a uma base
+def base_restrita() -> str:
+    """Id da base quando a chave de conhecimento é restrita a uma base só ('' = chave geral do workspace)."""
+    return db.get_meta("dify_dataset_restrita") or ""
 
 
 async def preparar_agente(ag: dict) -> str:
-    """Cria a base colaborativa do agente no Dify (uma vez) e garante a quarentena. Devolve o id da base."""
+    """Base onde entra o conhecimento aprovado do agente. Com chave restrita, é a base da chave; com chave geral,
+    cria "Colaborativo - <agente>" (quando o admin não escolheu uma base que já existe)."""
     _exigir_chave_ds()
+    if ag.get("dataset_id"):
+        return ag["dataset_id"]
+    if base_restrita():
+        return base_restrita()
     try:
-        await garantir_quarentena()
-        if ag.get("dataset_id"):
-            return ag["dataset_id"]
         base = await dify.base_criar(f"Colaborativo - {ag['nome']}"[:40],
                                      f"Conhecimento enviado pelos usuários e aprovado na plataforma para o agente "
                                      f"{ag['nome']}.", "high_quality")
@@ -285,10 +279,11 @@ async def preparar_agente(ag: dict) -> str:
     return base["id"]
 
 
-async def _converter(dados: bytes, nome: str) -> tuple[bytes, dict]:
+async def _conversor(dados: bytes, nome: str, ocr: bool) -> tuple[bytes, dict]:
+    """PDF (com OCR se pedido) + texto extraído pelo conversor isolado."""
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(1200, connect=10)) as c:
-            r = await c.post(f"{settings.CONVERSOR_URL}/converter", params={"nome": nome}, content=dados)
+            r = await c.post(f"{settings.CONVERSOR_URL}/processar", params={"nome": nome, "ocr": int(ocr)}, content=dados)
     except httpx.HTTPError as e:
         raise ErroProcessamento(f"O conversor de arquivos não respondeu ({type(e).__name__}).")
     if r.status_code >= 400:
@@ -297,8 +292,49 @@ async def _converter(dados: bytes, nome: str) -> tuple[bytes, dict]:
         except ValueError:
             msg = r.text
         raise ErroProcessamento(f"Falha na conversão: {str(msg)[:200]}")
-    return r.content, {"ocr": r.headers.get("x-ocr", "aplicado"), "paginas": int(r.headers.get("x-paginas") or 0),
-                       "caracteres": int(r.headers.get("x-caracteres") or 0)}
+    j = r.json()
+    return base64.b64decode(j.get("pdf") or ""), {"ocr": j.get("ocr") or "aplicado", "paginas": j.get("paginas") or 0,
+                                                    "texto": j.get("texto") or ""}
+
+
+def _decodificar(dados: bytes) -> str:
+    for cod in ("utf-8-sig", "cp1252"):
+        try:
+            return dados.decode(cod)
+        except UnicodeDecodeError:
+            continue
+    return dados.decode("utf-8", "replace")
+
+
+def partes_do_texto(texto: str, tamanho: int = 1200) -> list[str]:
+    """Divide o texto extraído em trechos (por parágrafo) para a prévia do aprovador e para os alertas."""
+    partes, atual = [], ""
+    for par in re.split(r"\n\s*\n", texto or ""):
+        par = par.strip()
+        if not par:
+            continue
+        while len(par) > tamanho:  # parágrafo enorme: corta em pedaços
+            if atual:
+                partes.append(atual)
+                atual = ""
+            partes.append(par[:tamanho])
+            par = par[tamanho:]
+        if atual and len(atual) + len(par) + 2 > tamanho:
+            partes.append(atual)
+            atual = par
+        else:
+            atual = f"{atual}\n\n{par}" if atual else par
+    if atual:
+        partes.append(atual)
+    return partes
+
+
+def _texto_local(envio_id: int) -> str:
+    try:
+        with open(os.path.join(_pasta(envio_id), "texto.txt"), encoding="utf-8") as f:
+            return f.read()
+    except OSError:
+        return ""
 
 
 async def _esperar_processamento(dataset_id: str, batch: str) -> None:
@@ -315,26 +351,28 @@ async def _esperar_processamento(dataset_id: str, batch: str) -> None:
         await asyncio.sleep(INTERVALO_STATUS)
 
 
-async def _todos_trechos(dataset_id: str, doc_id: str, maximo: int = 3000) -> list[str]:
-    textos, pagina = [], 1
-    while len(textos) < maximo:
-        r = await dify.documento_trechos(dataset_id, doc_id, pagina, 100)
-        dados = r.get("data") or []
-        textos += [s.get("content") or "" for s in sorted(dados, key=lambda s: s.get("position") or 0)]
-        if not r.get("has_more") or not dados:
-            break
-        pagina += 1
-    return textos
+async def _conferir_publicacao(envio_id: int, dataset_id: str, batch: str) -> None:
+    """Depois da aprovação, acompanha o processamento no Dify e registra se ele falhar (aparece no envio)."""
+    try:
+        await _esperar_processamento(dataset_id, batch)
+    except Exception as erro:  # noqa: BLE001
+        msg = str(erro) if isinstance(erro, ErroProcessamento) else f"Falha ao acompanhar no Dify ({type(erro).__name__})."
+        db.atualizar_envio(envio_id, erro=f"Aprovado, mas {msg[0].lower()}{msg[1:]}")
+        db.registrar_evento(envio_id, "sistema", "erro", f"depois da aprovação: {msg}")
 
 
-# ------------------------------------------------------------------ processamento em segundo plano
+# ------------------------------------------------------------------ processamento em segundo plano (quarentena local)
 _tarefas: set[asyncio.Task] = set()
 
 
-def agendar(envio_id: int) -> None:
-    t = asyncio.create_task(processar(envio_id))
+def _em_segundo_plano(coro) -> None:
+    t = asyncio.create_task(coro)
     _tarefas.add(t)
     t.add_done_callback(_tarefas.discard)
+
+
+def agendar(envio_id: int) -> None:
+    _em_segundo_plano(processar(envio_id))
 
 
 def retomar() -> None:
@@ -347,10 +385,11 @@ def retomar() -> None:
 
 
 async def processar(envio_id: int) -> None:
+    """Quarentena LOCAL: o arquivo espera aqui no servidor. Converte/aplica OCR quando preciso, extrai o texto para a
+    prévia e os alertas, e só manda para o Dify quando um aprovador aprovar (nada não aprovado chega ao Dify)."""
     e = db.get_envio(envio_id)
     if not e or e["status"] != "processando":
         return
-    quarentena = doc_id = None
     try:
         original = _arquivo_local(e, "original")
         if not original:
@@ -358,46 +397,44 @@ async def processar(envio_id: int) -> None:
         with open(original, "rb") as f:
             dados = f.read()
         ext = e["arquivo_ext"]
-        mime, tratamento = TIPOS[ext]
+        _mime, tratamento = TIPOS[ext]
         info: dict = {"ocr": "nao_aplicavel"}
         if tratamento == "auto":  # DOCX: com imagens vai pelo conversor (OCR), sem imagens vai direto (preserva tabelas)
             tratamento = "conversor" if validar_conteudo(dados, ext).get("imagens") else "direto"
-        enviado_nome, enviado, enviado_mime = e["arquivo_nome"], dados, mime
-        if tratamento == "conversor":
+        enviado_nome, texto = e["arquivo_nome"], ""
+        if ext in ("txt", "md", "csv"):
+            texto = _decodificar(dados)
+        elif tratamento == "conversor":
             if settings.CONVERSOR_URL:
-                enviado, conv = await _converter(dados, e["arquivo_nome"])
+                pdf, conv = await _conversor(dados, e["arquivo_nome"], ocr=True)
+                texto = conv.pop("texto")
                 info.update(conv, convertido=1)
-                enviado_nome, enviado_mime = e["arquivo_nome"].rsplit(".", 1)[0] + ".pdf", "application/pdf"
+                enviado_nome = e["arquivo_nome"].rsplit(".", 1)[0] + ".pdf"
                 with open(os.path.join(_pasta(envio_id), "convertido.pdf"), "wb") as f:
-                    f.write(enviado)
+                    f.write(pdf)
             elif ext == "pdf":
                 info["sem_conversor"] = True
             else:
                 raise ErroProcessamento("Este tipo de arquivo precisa do conversor, que não está configurado "
                                         "(CONVERSOR_URL).")
-        elif ext == "xlsx" and validar_conteudo(dados, ext).get("imagens"):
-            info["imagens_planilha"] = True
-
-        quarentena = await garantir_quarentena()
-        try:
-            r = await dify.documento_enviar(quarentena, enviado_nome, enviado, enviado_mime, "economy")
-        except dify.DifyErro as erro:
-            if erro.status != 404:
-                raise
-            quarentena = await garantir_quarentena(recriar=True)  # a quarentena foi apagada no Dify: cria outra
-            r = await dify.documento_enviar(quarentena, enviado_nome, enviado, enviado_mime, "economy")
-        doc_id = r["document"]["id"]
-        db.atualizar_envio(envio_id, quarentena_doc=doc_id, enviado_nome=enviado_nome,
-                           convertido=info.get("convertido", 0), ocr=info["ocr"], paginas=info.get("paginas"))
-        await _esperar_processamento(quarentena, r["batch"])
-        textos = await _todos_trechos(quarentena, doc_id)
-        alertas, caracteres = analisar(textos, info)
+        else:  # DOCX sem imagem, XLSX, XLS: vão como estão para o Dify; o conversor só lê o texto para a prévia
+            if settings.CONVERSOR_URL:
+                _pdf, conv = await _conversor(dados, e["arquivo_nome"], ocr=False)
+                texto = conv["texto"]
+            else:
+                info["sem_previa"] = True
+            if ext == "xlsx" and validar_conteudo(dados, ext).get("imagens"):
+                info["imagens_planilha"] = True
+        with open(os.path.join(_pasta(envio_id), "texto.txt"), "w", encoding="utf-8") as f:
+            f.write(texto)
+        partes = partes_do_texto(texto)
+        alertas, caracteres = analisar(partes, info)
         if not db.mudar_status_envio(envio_id, ("processando",), "pendente", alertas=alertas, caracteres=caracteres,
-                                     trechos=len(textos)):
-            # cancelado durante o processamento: tira da quarentena
-            await dify.documento_apagar(quarentena, doc_id)
+                                     trechos=len(partes), enviado_nome=enviado_nome,
+                                     convertido=info.get("convertido", 0), ocr=info["ocr"], paginas=info.get("paginas")):
+            _limpar_local(envio_id)  # cancelado durante o processamento
             return
-        resumo = f"{len(textos)} trecho(s), {caracteres} caracteres"
+        resumo = f"{len(partes)} trecho(s), {caracteres} caracteres"
         if info.get("convertido"):
             resumo += f"; convertido para PDF, OCR {info['ocr']}"
         if alertas:
@@ -406,20 +443,11 @@ async def processar(envio_id: int) -> None:
     except Exception as erro:  # noqa: BLE001 - qualquer falha vira status "erro" com a mensagem para o usuário
         if isinstance(erro, ErroProcessamento):
             msg = str(erro)
-        elif isinstance(erro, dify.DifyErro):
-            msg = f"O Dify recusou o arquivo ({erro.mensagem})."
-        elif isinstance(erro, httpx.HTTPError):
-            msg = "Não foi possível falar com o Dify."
         else:
             log.exception("falha ao processar o envio %s", envio_id)
             msg = f"Falha inesperada no processamento ({type(erro).__name__})."
         if db.mudar_status_envio(envio_id, ("processando",), "erro", erro=msg):
             db.registrar_evento(envio_id, "sistema", "erro", msg)
-        if quarentena and doc_id:
-            try:
-                await dify.documento_apagar(quarentena, doc_id)
-            except Exception:  # noqa: BLE001
-                pass
         _limpar_local(envio_id)
 
 
@@ -577,10 +605,7 @@ def detalhe(envio_id: int, user: dict = Depends(usuario_atual)):
 
 
 def _onde_esta(e: dict) -> tuple[str, str] | None:
-    """(base, documento) onde o conteúdo está no Dify agora."""
-    if e["status"] in ("pendente", "publicando") and e["quarentena_doc"]:
-        q = db.get_meta("quarentena_dataset")
-        return (q, e["quarentena_doc"]) if q else None
+    """(base, documento) no Dify para envios aprovados; antes disso o conteúdo só existe aqui (quarentena local)."""
     if e["status"] in ("aprovado", "desativado") and e["destino_doc"]:
         return e["dataset_id"], e["destino_doc"]
     return None
@@ -589,6 +614,12 @@ def _onde_esta(e: dict) -> tuple[str, str] | None:
 @router.get("/api/conhecimento/envios/{envio_id}/trechos")
 async def trechos(envio_id: int, pagina: int = 1, user: dict = Depends(usuario_atual)):
     e = _envio_ou_404(envio_id, user)
+    if e["status"] in ("pendente", "publicando"):  # quarentena local: prévia do texto extraído aqui
+        partes = partes_do_texto(_texto_local(envio_id))
+        ini = (max(1, pagina) - 1) * 50
+        return {"itens": [{"posicao": ini + i + 1, "texto": t, "palavras": len(t.split())}
+                          for i, t in enumerate(partes[ini:ini + 50])],
+                "mais": ini + 50 < len(partes), "total": len(partes), "pagina": max(1, pagina)}
     local = _onde_esta(e)
     if not local:
         raise HTTPException(409, "O conteúdo deste envio não está disponível (ainda em processamento, recusado ou excluído).")
@@ -638,6 +669,7 @@ class DecisaoIn(BaseModel):
 
 
 async def _tirar_da_quarentena(e: dict) -> None:
+    """Só para envios da versão antiga, que usava uma base de quarentena no Dify. Hoje a quarentena é local."""
     q = db.get_meta("quarentena_dataset")
     if q and e.get("quarentena_doc"):
         try:
@@ -699,6 +731,8 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
                           destino_batch=r.get("batch"), decidido_por=user["username"], decidido_em=db.agora(),
                           motivo=dados.motivo.strip(), autoaprovado=int(proprio), **extra)
     db.registrar_evento(envio_id, user["username"], "autoaprovado" if proprio else "aprovado", detalhe)
+    if r.get("batch"):
+        _em_segundo_plano(_conferir_publicacao(envio_id, ag["dataset_id"], r["batch"]))
     await _tirar_da_quarentena(e)
     _limpar_local(envio_id)
     return _publico(db.get_envio(envio_id), user)
@@ -764,6 +798,8 @@ async def excluir(envio_id: int, dados: AcaoAdminIn, admin: dict = Depends(exigi
 
 class ChaveConhecimentoIn(BaseModel):
     chave: str = Field(min_length=1, max_length=200)
+    # chave restrita a uma base só (boa prática): o id da base, que aparece no endereço dela no Dify
+    base_id: str = Field(default="", max_length=64)
 
 
 RX_CHAVE_DS = re.compile(r"(dataset|ds)-[A-Za-z0-9]{16,64}")
@@ -773,7 +809,7 @@ RX_CHAVE_DS = re.compile(r"(dataset|ds)-[A-Za-z0-9]{16,64}")
 def config_conhecimento(admin: dict = Depends(exigir_admin)):
     chave, origem = dify.chave_conhecimento()
     return {"chave_configurada": bool(chave), "chave_mascarada": f"{chave[:6]}…{chave[-4:]}" if chave else "",
-            "origem": origem, "quarentena": db.get_meta("quarentena_dataset") or "",
+            "origem": origem, "restrita": base_restrita(), "restrita_nome": db.get_meta("dify_dataset_restrita_nome") or "",
             "conversor": bool(settings.CONVERSOR_URL), "max_mb": settings.CONHECIMENTO_MAX_MB}
 
 
@@ -782,16 +818,36 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
     chave = dados.chave.strip()
     if not RX_CHAVE_DS.fullmatch(chave):
         raise HTTPException(400, "Chave inválida. No Dify: Conhecimento > API > Criar chave (começa com dataset- ou ds-).")
+    restrita, restrita_nome = "", ""
     try:
         await dify.testar_chave_conhecimento(chave)
     except dify.DifyErro as e:
-        if e.status in (401, 403):
-            raise HTTPException(400, "O Dify recusou essa chave, ou ela é restrita a bases específicas. Use a chave "
-                                     "geral de conhecimento do workspace: a plataforma precisa criar as bases dos agentes.")
-        raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
+        if e.status == 401:
+            raise HTTPException(400, "O Dify recusou essa chave. Confira se copiou a chave inteira.")
+        if e.status != 403:
+            raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
+        # 403 ao listar: chave restrita a bases específicas. Funciona, desde que se saiba qual é a base.
+        base_id = dados.base_id.strip()
+        if not base_id:
+            raise HTTPException(400, "Essa chave é restrita a uma base. Informe o ID da base: abra a base no Dify e "
+                                     "copie o código que aparece no endereço, depois de /datasets/.")
+        if not RX_UUID.fullmatch(base_id):
+            raise HTTPException(400, "ID da base inválido (copie o código do endereço da base no Dify).")
+        try:
+            base = await dify.base_info(base_id, chave)
+        except dify.DifyErro:
+            raise HTTPException(400, "Essa chave não tem acesso à base informada. Confira o ID da base.")
+        restrita, restrita_nome = base_id, str(base.get("name") or "")
     except httpx.HTTPError:
         raise HTTPException(502, "Não foi possível falar com o Dify.")
+    if restrita:
+        presos = [a["nome"] for a in db.list_agentes() if a.get("dataset_id") and a["dataset_id"] != restrita]
+        if presos:
+            raise HTTPException(400, "Essa chave só acessa a base informada, mas estes agentes usam outra base: "
+                                     + ", ".join(presos) + ". Troque a base deles antes, ou use uma chave geral.")
     db.set_meta("dify_dataset_key", chave)
+    db.set_meta("dify_dataset_restrita", restrita)
+    db.set_meta("dify_dataset_restrita_nome", restrita_nome)
     db.auditar(admin["username"], "chave_conhecimento", "", "chave de conhecimento cadastrada/trocada")
     return config_conhecimento(admin)
 
@@ -799,6 +855,8 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
 @router.delete("/api/admin/conhecimento/config")
 def remover_chave_conhecimento(admin: dict = Depends(exigir_admin)):
     db.set_meta("dify_dataset_key", "")
+    db.set_meta("dify_dataset_restrita", "")
+    db.set_meta("dify_dataset_restrita_nome", "")
     db.auditar(admin["username"], "chave_conhecimento", "", "chave de conhecimento removida da tela")
     return config_conhecimento(admin)
 
@@ -1039,7 +1097,7 @@ async def bases_do_dify(admin: dict = Depends(exigir_admin)):
     """Bases do Dify para o admin escolher em qual o conhecimento aprovado de cada agente entra."""
     _exigir_chave_ds()
     try:
-        bases = await dify.bases_listar()
+        bases = [await dify.base_info(base_restrita())] if base_restrita() else await dify.bases_listar()
     except dify.DifyErro as e:
         raise HTTPException(502, f"O Dify não listou as bases ({e.mensagem}).")
     except httpx.HTTPError:
@@ -1049,7 +1107,7 @@ async def bases_do_dify(admin: dict = Depends(exigir_admin)):
     for a in db.list_agentes():
         if a.get("dataset_id"):
             em_uso.setdefault(a["dataset_id"], []).append(a["nome"])
-    return {"itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
+    return {"pode_criar": not base_restrita(), "itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
                        "tecnica": b.get("indexing_technique"), "agentes": em_uso.get(b["id"], [])}
                       for b in bases if b.get("id") != quarentena and b.get("provider", "vendor") != "external"]}
 
@@ -1062,6 +1120,9 @@ async def validar_base(dataset_id: str) -> str:
         raise HTTPException(400, "Base de conhecimento inválida.")
     if dataset_id == db.get_meta("quarentena_dataset"):
         raise HTTPException(400, "A base de quarentena não pode receber conhecimento aprovado.")
+    if base_restrita() and dataset_id != base_restrita():
+        raise HTTPException(400, f"A chave cadastrada só tem acesso à base "
+                                 f"\"{db.get_meta('dify_dataset_restrita_nome') or base_restrita()}\".")
     try:
         base = await dify.base_info(dataset_id)
     except dify.DifyErro as e:
@@ -1071,8 +1132,4 @@ async def validar_base(dataset_id: str) -> str:
         raise HTTPException(502, "Não foi possível falar com o Dify.")
     if base.get("provider") == "external":
         raise HTTPException(400, "Bases externas não recebem arquivos.")
-    try:
-        await garantir_quarentena()
-    except (dify.DifyErro, httpx.HTTPError):
-        raise HTTPException(502, "Não foi possível criar a base de quarentena no Dify.")
     return dataset_id

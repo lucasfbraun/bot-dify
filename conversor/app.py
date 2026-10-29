@@ -5,6 +5,7 @@ docker compose). Recebe o arquivo no corpo da requisição e devolve um PDF com 
 conseguir ler também o texto que está em imagens (PDF escaneado, prints em slides, fotos de documentos).
 """
 import asyncio
+import base64
 import logging
 import os
 import subprocess
@@ -21,7 +22,7 @@ MAX_MB = int(os.getenv("CONVERSOR_MAX_MB", "60"))
 TIMEOUT_OFFICE = int(os.getenv("CONVERSOR_TIMEOUT_OFFICE", "180"))
 TIMEOUT_OCR = int(os.getenv("CONVERSOR_TIMEOUT_OCR", "900"))
 IDIOMAS = os.getenv("OCR_IDIOMAS", "por+eng")
-OFFICE = {"doc", "docx", "ppt", "pptx", "odt", "odp", "rtf"}
+OFFICE = {"doc", "docx", "ppt", "pptx", "odt", "odp", "rtf", "xlsx", "xls"}  # planilhas: só para a prévia do texto
 IMAGEM = {"jpg", "jpeg", "png"}
 ACEITOS = OFFICE | IMAGEM | {"pdf"}
 _fila = asyncio.Semaphore(int(os.getenv("CONVERSOES_SIMULTANEAS", "2")))  # LibreOffice/OCR pesam na CPU
@@ -58,26 +59,29 @@ def _ocr(entrada: str, saida: str, imagem: bool, pasta: str) -> str:
     return "falhou"
 
 
-def _contar_texto(pdf: str) -> tuple[int, int]:
+def _ler_texto(pdf: str) -> tuple[int, str]:
+    """(páginas, texto) do PDF, uma página por bloco."""
     doc = pdfium.PdfDocument(pdf)
     try:
-        caracteres = 0
-        for pagina in doc:
-            texto = pagina.get_textpage().get_text_bounded()
-            caracteres += len("".join(texto.split()))
-        return len(doc), caracteres
+        return len(doc), "\n\n".join(p.get_textpage().get_text_bounded().strip() for p in doc)
     finally:
         doc.close()
+
+
+def _contar_texto(pdf: str) -> tuple[int, int]:
+    paginas, texto = _ler_texto(pdf)
+    return paginas, len("".join(texto.split()))
 
 
 ASSINATURAS = {  # segunda barreira (a plataforma já confere antes): o conteúdo tem que bater com a extensão
     "docx": b"PK\x03\x04", "pptx": b"PK\x03\x04", "odt": b"PK\x03\x04", "odp": b"PK\x03\x04",
     "doc": b"\xd0\xcf\x11\xe0", "ppt": b"\xd0\xcf\x11\xe0", "rtf": b"{\\rtf",
     "png": b"\x89PNG", "jpg": b"\xff\xd8\xff", "jpeg": b"\xff\xd8\xff",
+    "xlsx": b"PK\x03\x04", "xls": b"\xd0\xcf\x11\xe0",
 }
 
 
-def converter_arquivo(dados: bytes, ext: str) -> tuple[bytes, dict]:
+def converter_arquivo(dados: bytes, ext: str, ocr: bool = True) -> tuple[bytes, dict]:
     if ext in ASSINATURAS and not dados.lstrip()[:8].startswith(ASSINATURAS[ext]):
         raise ErroConversao(422, "O conteúdo do arquivo não corresponde à extensão.")
     if ext == "pdf" and b"%PDF-" not in dados[:1024]:
@@ -96,21 +100,53 @@ def converter_arquivo(dados: bytes, ext: str) -> tuple[bytes, dict]:
                 log.warning("soffice saiu com %s: %s", r.returncode, (r.stderr or r.stdout or "")[-400:])
                 raise ErroConversao(422, "Não foi possível abrir o arquivo (corrompido ou formato não suportado).")
         saida = os.path.join(pasta, "saida.pdf")
-        ocr = _ocr(pdf, saida, ext in IMAGEM, pasta)
-        final = saida if ocr != "falhou" else pdf
-        if ext in IMAGEM and ocr == "falhou":
+        if ocr or ext in IMAGEM:
+            situacao = _ocr(pdf, saida, ext in IMAGEM, pasta)
+        else:
+            situacao = "nao_aplicado"  # só a prévia do texto (planilha/DOCX sem imagem vão como estão para o Dify)
+        final = saida if situacao not in ("falhou", "nao_aplicado") else pdf
+        if ext in IMAGEM and situacao == "falhou":
             raise ErroConversao(422, "Não foi possível ler a imagem.")
         try:
-            paginas, caracteres = _contar_texto(final)
+            paginas, texto = _ler_texto(final)
         except Exception:  # noqa: BLE001
             raise ErroConversao(422, "O PDF gerado está inválido.")
         with open(final, "rb") as f:
-            return f.read(), {"ocr": ocr, "paginas": paginas, "caracteres": caracteres}
+            return f.read(), {"ocr": situacao, "paginas": paginas, "caracteres": len("".join(texto.split())), "texto": texto}
 
 
 @app.get("/saude")
 def saude():
     return {"ok": True}
+
+
+async def _receber(request: Request, nome: str) -> tuple[bytes, str]:
+    ext = nome.rsplit(".", 1)[-1].lower() if "." in nome else ""
+    if ext not in ACEITOS:
+        raise HTTPException(415, "Tipo de arquivo não convertido aqui.")
+    limite = MAX_MB * 1024 * 1024
+    dados = bytearray()
+    async for parte in request.stream():
+        dados += parte
+        if len(dados) > limite:
+            raise HTTPException(413, "Arquivo grande demais para converter.")
+    if not dados:
+        raise HTTPException(400, "Arquivo vazio.")
+    return bytes(dados), ext
+
+
+@app.post("/processar")
+async def processar(request: Request, nome: str, ocr: int = 1):
+    """PDF com OCR (base64) + o texto extraído, numa chamada só. ocr=0: só converte para ler o texto."""
+    dados, ext = await _receber(request, nome)
+    async with _fila:
+        try:
+            pdf, info = await asyncio.to_thread(converter_arquivo, dados, ext, bool(ocr))
+        except ErroConversao as e:
+            raise HTTPException(e.status, e.mensagem)
+    log.info("processado .%s (%d KB) -> %d pág., %d caracteres, OCR %s", ext, len(dados) // 1024, info["paginas"],
+             info["caracteres"], info["ocr"])
+    return {**info, "pdf": base64.b64encode(pdf).decode()}
 
 
 @app.post("/converter")

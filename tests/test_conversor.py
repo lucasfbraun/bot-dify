@@ -3,12 +3,13 @@
     docker build -t agente-pu-conversor:teste conversor
     docker run -d --name conversor-teste --read-only --tmpfs /tmp:size=1g --cap-drop ALL \
         --security-opt no-new-privileges --memory 2g --pids-limit 256 -p 127.0.0.1:8097:8000 agente-pu-conversor:teste
-    pip install python-pptx python-docx pypdfium2 pillow
+    pip install python-pptx python-docx pypdfium2 pillow openpyxl
     python tests/test_conversor.py
 
 Gera os arquivos na hora (imagem com texto, PDF escaneado, PPTX/PPT com texto e print, DOCX com imagem) e confere
 se o PDF devolvido tem tanto o texto digital quanto o texto que estava DENTRO das imagens (OCR).
 """
+import base64
 import io
 import os
 import subprocess
@@ -132,6 +133,23 @@ print("== PDF digital (o texto existente é preservado)")
 r = converter("digital.pdf", pdf_digital)
 t = texto_pdf(r.content) if r.status_code == 200 else ""
 ok(r.status_code == 200 and "formulacao" in t and r.headers.get("x-ocr") in ("aplicado", "parcial"), f"PDF digital reprocessado (OCR {r.headers.get('x-ocr')})")
+
+print("== /processar: PDF + texto numa chamada (quarentena local da plataforma)")
+r = httpx.post(f"{URL}/processar", params={"nome": "ficha.png", "ocr": 1}, content=png, timeout=600)
+j = r.json() if r.status_code == 200 else {}
+ok(r.status_code == 200 and "FLEXX" in j.get("texto", "") and base64.b64decode(j.get("pdf", "")).startswith(b"%PDF"),
+   "devolve o texto extraído e o PDF com OCR")
+from openpyxl import Workbook  # noqa: E402
+
+wb = Workbook()
+wb.active.append(["Lote", "Densidade"])
+wb.active.append(["24-1233", "33,4"])
+buf = io.BytesIO()
+wb.save(buf)
+r = httpx.post(f"{URL}/processar", params={"nome": "inspecoes.xlsx", "ocr": 0}, content=buf.getvalue(), timeout=600)
+j = r.json() if r.status_code == 200 else {}
+ok(r.status_code == 200 and "24-1233" in j.get("texto", "") and j.get("ocr") == "nao_aplicado",
+   f"planilha: só lê o texto para a prévia, sem OCR ({r.status_code})")
 
 print("== arquivos inválidos")
 ok(converter("quebrado.pptx", b"isto nao e um pptx" * 50).status_code == 422, "PPTX corrompido -> 422")

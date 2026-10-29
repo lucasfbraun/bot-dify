@@ -275,9 +275,28 @@ BASES: dict[str, dict] = {}
 DOCS: dict[str, dict] = {}
 
 
-def _ds(req: Request):
-    auth = req.headers.get("authorization", "")
-    return auth[7:] == CHAVE_CONHECIMENTO
+VINCULOS: set[str] = set()  # bases que a chave restrita alcança (POST /teste/vincular)
+
+
+def _ds(req: Request, bid: str | None = None):
+    """Chave geral alcança tudo; a restrita só as rotas com uma das bases vinculadas (como no Dify)."""
+    chave = req.headers.get("authorization", "")[7:]
+    if chave == CHAVE_CONHECIMENTO:
+        return True
+    return chave == CHAVE_CONHECIMENTO_RESTRITA and bid is not None and bid in VINCULOS
+
+
+def _recusa(req: Request):
+    if req.headers.get("authorization", "")[7:] == CHAVE_CONHECIMENTO_RESTRITA:
+        return JSONResponse({"code": "forbidden", "message": "The API key is not authorized to access this knowledge base."}, 403)
+    return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+
+
+@app.post("/teste/vincular")
+async def teste_vincular(req: Request):
+    """Só para testes: restringe a chave restrita a uma base."""
+    VINCULOS.add((await req.json())["base"])
+    return {"ok": True}
 
 
 def _texto_do_arquivo(nome: str, dados: bytes) -> str:
@@ -292,7 +311,7 @@ def _texto_do_arquivo(nome: str, dados: bytes) -> str:
 @app.get("/v1/datasets")
 async def bases_listar(req: Request):
     if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+        return _recusa(req)
     page, limit = int(req.query_params.get("page", 1)), min(int(req.query_params.get("limit", 20)), 100)
     todas = [{**b, "document_count": sum(1 for d in DOCS.values() if d["base"] == b["id"]), "provider": "vendor"}
              for b in BASES.values()]
@@ -303,7 +322,7 @@ async def bases_listar(req: Request):
 @app.post("/v1/datasets")
 async def base_criar(req: Request):
     if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+        return _recusa(req)
     b = await req.json()
     bid = str(uuid.uuid4())
     BASES[bid] = {"id": bid, "name": b["name"], "indexing_technique": b.get("indexing_technique"),
@@ -313,8 +332,8 @@ async def base_criar(req: Request):
 
 @app.get("/v1/datasets/{bid}")
 async def base_info(bid: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     if bid not in BASES:
         return JSONResponse({"code": "not_found", "message": "Dataset not found."}, 404)
     return BASES[bid]
@@ -322,8 +341,8 @@ async def base_info(bid: str, req: Request):
 
 @app.post("/v1/datasets/{bid}/document/create-by-file")
 async def doc_criar(bid: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     if bid not in BASES:
         return JSONResponse({"code": "not_found", "message": "Dataset not found."}, 404)
     form = await req.form()
@@ -344,8 +363,8 @@ async def doc_criar(bid: str, req: Request):
 
 @app.get("/v1/datasets/{bid}/documents/{batch}/indexing-status")
 async def doc_status(bid: str, batch: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     d = next((x for x in DOCS.values() if x["batch"] == batch and x["base"] == bid), None)
     if not d:
         return {"data": []}
@@ -357,8 +376,8 @@ async def doc_status(bid: str, batch: str, req: Request):
 
 @app.get("/v1/datasets/{bid}/documents/{did}/segments")
 async def doc_trechos(bid: str, did: str, req: Request, page: int = 1, limit: int = 20):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     d = DOCS.get(did)
     if not d or d["base"] != bid:
         return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
@@ -371,8 +390,8 @@ async def doc_trechos(bid: str, did: str, req: Request, page: int = 1, limit: in
 
 @app.delete("/v1/datasets/{bid}/documents/{did}")
 async def doc_apagar(bid: str, did: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     if did not in DOCS or DOCS[did]["base"] != bid:
         return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
     DOCS.pop(did)
@@ -382,8 +401,8 @@ async def doc_apagar(bid: str, did: str, req: Request):
 
 @app.patch("/v1/datasets/{bid}/documents/status/{acao}")
 async def doc_mudar_status(bid: str, acao: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     b = await req.json()
     for did in b.get("document_ids", []):
         if did in DOCS:
@@ -393,8 +412,8 @@ async def doc_mudar_status(bid: str, acao: str, req: Request):
 
 @app.get("/v1/datasets/{bid}/documents/{did}/download")
 async def doc_link(bid: str, did: str, req: Request):
-    if not _ds(req):
-        return JSONResponse({"code": "unauthorized", "message": "Access token is invalid"}, 401)
+    if not _ds(req, bid):
+        return _recusa(req)
     if did not in DOCS:
         return JSONResponse({"code": "not_found", "message": "Document not found."}, 404)
     return {"url": f"{str(req.base_url).rstrip('/')}/files/{did}?sign=teste"}

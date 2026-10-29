@@ -434,9 +434,12 @@
   <dialog id="dlg-chave-conh" class="dialogo">
     <form method="dialog" class="dialogo-corpo" id="form-chave-conh" novalidate>
       <h3>Chave de API de Conhecimento do Dify</h3>
-      <p class="muted dica">No Dify: <b>Conhecimento</b> &gt; <b>API</b> (canto superior direito) &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b>. Use a chave geral do workspace: a plataforma cria a base colaborativa de cada agente e a quarentena. A chave fica só no servidor.</p>
+      <p class="muted dica">No Dify: <b>Conhecimento</b> &gt; <b>API</b> (canto superior direito) &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b>. A chave fica só no servidor e aparece mascarada.</p>
       <label for="chave-conh">Chave</label>
       <input id="chave-conh" type="password" autocomplete="off" spellcheck="false" placeholder="dataset-…" maxlength="200">
+      <label for="chave-conh-base">ID da base (só se a chave for restrita a uma base)</label>
+      <input id="chave-conh-base" autocomplete="off" spellcheck="false" placeholder="ex.: 3f2a8c1e-…" maxlength="64">
+      <p class="muted dica">Recomendado: restringir a chave à base que vai receber o conhecimento aprovado (por exemplo, <b>Feedback</b>). Para achar o ID, abra a base no Dify e copie o código do endereço, logo depois de <code>/datasets/</code>. Com chave geral, deixe em branco.</p>
       <p id="chave-conh-erro" class="erro" role="alert" hidden></p>
       <div class="dialogo-acoes">
         <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>

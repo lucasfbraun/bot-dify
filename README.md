@@ -9,7 +9,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Registros com filtros**: logins (ok, senha errada, sem liberação, conta desabilitada, bloqueio) e uso dos agentes (perguntas, erros, áudios), filtráveis por usuário, agente, tipo e período.
 - **Conversas de todos os usuários**: o administrador lê qualquer conversa de qualquer agente e exporta em TXT a conversa aberta, as selecionadas ou todas as do filtro.
 - **Chat com streaming**: seletor de agente na barra lateral (e atalhos na tela inicial), histórico separado por agente, status do que o agente está fazendo (consultando o Qlik, buscando certificados etc.), renomear/apagar, copiar e avaliar (👍/👎 vão para os registros do Dify).
-- **Envio de conhecimento com aprovação**: o usuário envia um arquivo (PDF, Office, apresentações, planilhas, imagens) para um agente aprender. O arquivo passa por leitura máxima (conversão para PDF e OCR), fica em quarentena, recebe alertas automáticos (instruções suspeitas, dados pessoais, pouco texto) e só entra na base do agente depois da aprovação de um aprovador daquele agente. Só administradores desativam ou excluem um conhecimento aprovado.
+- **Envio de conhecimento com aprovação**: o usuário envia um arquivo (PDF, Office, apresentações, planilhas, imagens) para um agente aprender. O arquivo passa por leitura máxima (conversão para PDF e OCR), fica em quarentena **nesta plataforma** (nada chega ao Dify antes de aprovado), recebe alertas automáticos (instruções suspeitas, dados pessoais, pouco texto) e só entra na base do agente depois da aprovação de um aprovador daquele agente. Só administradores desativam ou excluem um conhecimento aprovado.
 - **Avaliações viram treinamento**: nos agentes que recebem conhecimento, cada 👍 manda a resposta para aprovação como "resposta validada", e cada 👎 manda para aprovação como "correção". No 👎, a pessoa pode escrever a resposta certa (opcional); se não escrever, o aprovador escreve ao aprovar. Só a resposta correta entra na base do agente.
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
@@ -115,13 +115,15 @@ Os usuários enviam arquivos para os agentes aprenderem, mas **nada entra na bas
 
 ```
 Usuário envia arquivo ──► validação (tipo real, tamanho, macros, bomba de compressão)
-                     ──► conversor isolado: PDF + OCR quando preciso (máxima extração)
-                     ──► QUARENTENA no Dify (base que nenhum agente consulta; modo econômico, sem custo de IA)
+                     ──► QUARENTENA LOCAL: o arquivo fica no servidor desta plataforma
+                     ──► conversor isolado: PDF + OCR quando preciso e extração do texto (máxima extração)
                      ──► alertas automáticos (instruções suspeitas, dados pessoais, pouco texto)
-                     ──► aprovador analisa: arquivo, trechos como o Dify leu, alertas
-                           ├─ Aprovar ──► arquivo vai para a base "Colaborativo - <agente>" e sai da quarentena
-                           └─ Rejeitar (motivo obrigatório) ──► sai da quarentena; quem enviou vê o motivo
+                     ──► aprovador analisa: arquivo, texto extraído (prévia), alertas
+                           ├─ Aprovar ──► só agora o arquivo vai para a base do agente no Dify (ex.: "Feedback")
+                           └─ Rejeitar (motivo obrigatório) ──► é apagado do servidor; quem enviou vê o motivo
 ```
+
+**Nada que não foi aprovado chega ao Dify.** Enquanto espera, o envio fica só no servidor da plataforma (no volume de dados), e a prévia mostrada ao aprovador é o texto extraído aqui pelo conversor. Por isso a plataforma precisa de acesso a **uma base só** no Dify: a que recebe o conhecimento aprovado. Depois de aprovado, a plataforma acompanha o processamento no Dify; se o Dify não conseguir ler o arquivo, o envio mostra "Aprovado, mas o Dify não conseguiu processar…" e o admin pode excluí-lo.
 
 ### Máxima extração do conteúdo
 
@@ -133,9 +135,9 @@ O Dify lê só texto digital. Para não perder o que está em imagens, o convers
 | PDF escaneado, JPG, PNG | OCR completo (português + inglês) |
 | PPT, PPTX, DOC, RTF, ODT | Conversão para PDF + OCR das imagens dos slides/páginas |
 | DOCX **com imagens** | Conversão para PDF + OCR (para não perder o texto das figuras) |
-| DOCX sem imagens, XLSX, XLS, CSV, TXT, MD | Direto para o Dify, que preserva melhor tabelas, linhas e colunas |
+| DOCX sem imagens, XLSX, XLS, CSV, TXT, MD | Vai como está para o Dify, que preserva melhor tabelas, linhas e colunas. O conversor só lê o texto para a prévia do aprovador |
 
-Depois que o Dify processa, a plataforma conta quanto texto saiu e avisa o aprovador quando veio pouco.
+A plataforma conta quanto texto foi extraído e avisa o aprovador quando veio pouco.
 
 ### Papéis e permissões
 
@@ -158,14 +160,15 @@ Depois que o Dify processa, a plataforma conta quanto texto saiu e avisa o aprov
 ### Configurar (uma vez)
 
 1. **Chave de conhecimento do Dify**: no Dify, abra **Conhecimento → API** (canto superior direito) → **Chave da API** → **Criar nova chave**. Na plataforma: **Administração → Agentes → Envio de conhecimento pelos usuários → Cadastrar chave**. A plataforma testa a chave antes de salvar; ela fica só no servidor e aparece mascarada.
-   - Use a **chave geral de conhecimento do workspace**. Chaves restritas a bases específicas não conseguem criar bases, e a plataforma precisa criar a base de cada agente e a quarentena.
-   - Também dá para usar `DIFY_DATASET_API_KEY` no `.env`; a chave cadastrada na tela tem prioridade.
+   - **Recomendado (menor acesso possível): chave restrita à base que vai receber o conhecimento** (por exemplo, **Feedback**). Ao criar a chave no Dify, restrinja-a a essa base. Na plataforma, preencha também o **"ID da base"**: abra a base no Dify e copie o código que aparece no endereço, logo depois de `/datasets/` (ex.: `https://dify…/datasets/3f2a8c1e-…/documents`). Com chave restrita, a plataforma só enxerga essa base: todos os agentes que recebem conhecimento usam ela, e não dá para criar bases novas pela plataforma.
+   - Com a **chave geral do workspace**, deixe o ID em branco: a plataforma lista todas as bases e pode criar uma nova por agente.
+   - Também dá para usar `DIFY_DATASET_API_KEY` no `.env` (só chave geral); a chave cadastrada na tela tem prioridade.
 2. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"** e, no campo **"Base de conhecimento onde entra o que for aprovado"**, escolha:
-   - **uma base que você já criou no Dify** (por exemplo, **Feedback**). A lista mostra todas as bases do workspace, com o número de documentos e qual agente já usa cada uma. A base pode estar vazia: se ainda não tiver tipo de indexação, o primeiro documento aprovado entra em alta qualidade (com embeddings); ou
-   - **"Criar uma base nova"**: a plataforma cria no Dify a base **Colaborativo - Nome do agente** (alta qualidade).
+   - **uma base que você já criou no Dify** (por exemplo, **Feedback**). A lista mostra as bases que a chave alcança, com o número de documentos e qual agente já usa cada uma (com chave restrita, só a base dela). A base pode estar vazia: se ainda não tiver tipo de indexação, o primeiro documento aprovado entra em alta qualidade (com embeddings); ou
+   - **"Criar uma base nova"** (só com chave geral): a plataforma cria no Dify a base **Colaborativo - Nome do agente** (alta qualidade).
 
-   Na primeira vez, a plataforma também cria a base **Quarentena - envios para aprovação** (modo econômico), que nunca aparece na lista para escolha. Dá para trocar a base depois: os próximos conhecimentos aprovados entram na nova, e os que já foram aprovados continuam na base em que entraram (e continuam podendo ser desativados ou excluídos pelo admin).
-3. **Ligar a base ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar →** a base escolhida (por exemplo, **Feedback**) → **Publicar**. **Nunca** ligue a base de Quarentena a nenhum agente.
+   Dá para trocar a base depois: os próximos conhecimentos aprovados entram na nova, e os que já foram aprovados continuam na base em que entraram (e continuam podendo ser desativados ou excluídos pelo admin, desde que a chave alcance essa base).
+3. **Ligar a base ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar →** a base escolhida (por exemplo, **Feedback**) → **Publicar**.
 4. **Marcar os aprovadores**: **Administração → Usuários → botão "Não aprova"/"Aprova: …"** na linha da pessoa → marque os agentes.
 5. **Autoaprovação**: no mesmo diálogo do agente, **"Permitir que o aprovador aprove o próprio envio"** (vem ligada). Desligada, o envio de um aprovador espera outro aprovador do mesmo agente.
 
@@ -196,8 +199,8 @@ Como funciona:
 - **Corrigir também conta como 👎:** mandar uma correção registra a avaliação negativa no Dify, mesmo que o 👎 não tenha sido clicado antes.
 - **Resposta correta de verdade:** a correção (da pessoa ou do aprovador) precisa ter pelo menos 10 caracteres visíveis (caracteres invisíveis não contam) e não pode ser igual à resposta que foi avaliada como ruim.
 - **Limite:** no máximo 60 avaliações por pessoa por hora viram envios (`CONHECIMENTO_AVALIACOES_POR_HORA`). Acima disso, a avaliação continua registrada no Dify, mas não entra na fila, e a pessoa é avisada.
-- **Agente removido:** os envios dele que ainda não foram decididos (arquivos e avaliações) são cancelados e saem da quarentena.
-- **Para o aprovador, no 👎 ainda pendente:** o quadro de trechos é a **cópia em quarentena**, que contém a resposta errada e serve só para conferência. O que vai para a base é apenas o campo "Resposta correta".
+- **Agente removido:** os envios dele que ainda não foram decididos (arquivos e avaliações) são cancelados e apagados do servidor.
+- **Para o aprovador, no 👎 ainda pendente:** o quadro de trechos é a **cópia em quarentena** (local), que contém a resposta errada e serve só para conferência. O que vai para a base é apenas o campo "Resposta correta".
 - **Mesma segurança dos arquivos:** o texto passa pela quarentena e pelos alertas automáticos. Uma correção com "ignore as instruções anteriores…" gera o alerta de instrução suspeita. As regras de autoaprovação e de quem decide são as mesmas.
 - **Registros:** os envios aparecem com o tipo ("Resposta validada (👍)", "Correção (👎)") na lista, no filtro **Tipo** da aba Aprovados e na coluna **Tipo** do CSV dos registros. Quando o aprovador escreve ou ajusta a resposta correta, isso fica registrado.
 
@@ -212,7 +215,7 @@ Os alertas **não bloqueiam** nada; servem para o aprovador olhar com atenção:
 
 ### Segurança
 
-- **Quarentena**: o arquivo não entra em nenhuma base consultada por agente antes da aprovação.
+- **Quarentena local**: até ser aprovado, o envio fica só no servidor da plataforma; nada chega ao Dify. A chave de conhecimento pode ficar **restrita a uma única base** (a que recebe o aprovado).
 - **Conversor isolado**: container próprio, sem as chaves, sem acesso ao banco, sem internet (rede `internal` do Docker), sistema de arquivos só de leitura (`/tmp` em memória), sem privilégios (`cap_drop: ALL`, `no-new-privileges`), usuário sem root e com limite de memória, CPU e processos. Um arquivo malicioso que explore falha do LibreOffice não alcança nada importante.
 - **Validação do conteúdo real**: a extensão precisa bater com o conteúdo (PDF, ZIP do Office, OLE do Office antigo, PNG, JPEG, RTF); arquivos com macro e bombas de compressão são recusados. O nome do arquivo é limpo (sem pastas nem caracteres especiais).
 - **Arquivos abertos no navegador** vêm com `Content-Security-Policy: sandbox`: mesmo um PDF ou TXT malicioso não roda script nem acessa a sessão.
