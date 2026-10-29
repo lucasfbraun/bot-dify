@@ -849,7 +849,8 @@ class AlterarAgenteIn(BaseModel):
     ativo: bool | None = None
     chave: str | None = Field(default=None, max_length=200)
     recebe_conhecimento: bool | None = None   # usuários podem enviar arquivos (com aprovação) para este agente
-    dataset_id: str | None = Field(default=None, max_length=64)  # base do Dify escolhida (vazio = cria "Colaborativo - …")
+    dataset_id: str | None = Field(default=None, max_length=64)  # base para os arquivos (vazio = cria "Colaborativo - …")
+    dataset_feedback_id: str | None = Field(default=None, max_length=64)  # base para os feedbacks ("" = a mesma dos arquivos)
     autoaprovacao: bool | None = None         # aprovador pode aprovar o próprio envio
 
 
@@ -925,6 +926,9 @@ async def admin_alterar_agente(agente_id: int, dados: AlterarAgenteIn, admin: di
     if dados.dataset_id and dados.dataset_id.strip() != (atual.get("dataset_id") or ""):
         campos["dataset_id"] = await conhecimento.validar_base(dados.dataset_id)  # base que já existe no Dify
         atual = {**atual, "dataset_id": campos["dataset_id"]}
+    if dados.dataset_feedback_id is not None and dados.dataset_feedback_id.strip() != (atual.get("dataset_feedback_id") or ""):
+        campos["dataset_feedback_id"] = (await conhecimento.validar_base(dados.dataset_feedback_id)
+                                         if dados.dataset_feedback_id.strip() else None)
     if dados.recebe_conhecimento is not None:
         if dados.recebe_conhecimento and not atual.get("dataset_id"):
             campos["dataset_id"] = await conhecimento.preparar_agente(atual)  # cria a base colaborativa no Dify

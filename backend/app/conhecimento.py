@@ -255,9 +255,22 @@ def _exigir_chave_ds():
 
 
 # ------------------------------------------------------------------ chave de conhecimento: geral ou restrita a uma base
+def bases_restritas() -> list[str]:
+    """Ids das bases quando a chave de conhecimento é restrita a algumas bases ([] = chave geral do workspace)."""
+    return [b for b in (db.get_meta("dify_dataset_restrita") or "").split(",") if b]
+
+
 def base_restrita() -> str:
-    """Id da base quando a chave de conhecimento é restrita a uma base só ('' = chave geral do workspace)."""
-    return db.get_meta("dify_dataset_restrita") or ""
+    """Compatível com a versão anterior: '' quando a chave é geral."""
+    return ",".join(bases_restritas())
+
+
+def base_destino(ag: dict, origem: str | None) -> str | None:
+    """Para qual base vai um envio: feedback do chat (👍/👎) -> base de feedbacks (ou a dos arquivos, se não houver);
+    arquivo -> base de arquivos."""
+    if origem in ("feedback_positivo", "feedback_negativo"):
+        return ag.get("dataset_feedback_id") or ag.get("dataset_id")
+    return ag.get("dataset_id")
 
 
 async def preparar_agente(ag: dict) -> str:
@@ -266,8 +279,10 @@ async def preparar_agente(ag: dict) -> str:
     _exigir_chave_ds()
     if ag.get("dataset_id"):
         return ag["dataset_id"]
-    if base_restrita():
-        return base_restrita()
+    if len(bases_restritas()) == 1:
+        return bases_restritas()[0]
+    if bases_restritas():
+        raise HTTPException(400, "A chave alcança mais de uma base: escolha em qual entram os arquivos aprovados.")
     try:
         base = await dify.base_criar(f"Colaborativo - {ag['nome']}"[:40],
                                      f"Conhecimento enviado pelos usuários e aprovado na plataforma para o agente "
@@ -481,7 +496,7 @@ def _publico(e: dict, user: dict, aprova: list[int] | None = None) -> dict:
     campos = ("id", "agente_id", "agente_nome", "username", "arquivo_nome", "arquivo_ext", "tamanho", "sha256",
               "justificativa", "status", "enviado_nome", "convertido", "ocr", "paginas", "caracteres", "trechos",
               "alertas", "erro", "criado_em", "decidido_por", "decidido_em", "motivo", "autoaprovado", "origem",
-              "message_id", "pergunta", "resposta_original", "resposta_corrigida")
+              "message_id", "pergunta", "resposta_original", "resposta_corrigida", "dataset_id")
     return {**{k: e.get(k) for k in campos}, "pode_decidir": pode_decidir,
             "pode_cancelar": proprio and e["status"] in STATUS_ABERTOS,
             "pode_administrar": _admin(user) and e["status"] in ("aprovado", "desativado")}
@@ -713,8 +728,9 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
                 conteudo = f.read()
         nome = e["enviado_nome"] or e["arquivo_nome"]
         mime = TIPOS.get(nome.rsplit(".", 1)[-1].lower(), ("application/octet-stream",))[0]
-        base = await dify.base_info(ag["dataset_id"])
-        r = await dify.documento_enviar(ag["dataset_id"], nome, conteudo, mime,
+        destino = base_destino(ag, e.get("origem"))
+        base = await dify.base_info(destino)
+        r = await dify.documento_enviar(destino, nome, conteudo, mime,
                                         None if base.get("indexing_technique") else "high_quality")
     except Exception as erro:  # noqa: BLE001
         db.mudar_status_envio(envio_id, ("publicando",), "pendente")
@@ -729,10 +745,10 @@ async def aprovar(envio_id: int, dados: DecisaoIn, user: dict = Depends(usuario_
                    "correção ajustada pelo aprovador") + (f"; {detalhe}" if detalhe else "")
     db.mudar_status_envio(envio_id, ("publicando",), "aprovado", destino_doc=r["document"]["id"],
                           destino_batch=r.get("batch"), decidido_por=user["username"], decidido_em=db.agora(),
-                          motivo=dados.motivo.strip(), autoaprovado=int(proprio), **extra)
+                          motivo=dados.motivo.strip(), autoaprovado=int(proprio), dataset_id=destino, **extra)
     db.registrar_evento(envio_id, user["username"], "autoaprovado" if proprio else "aprovado", detalhe)
     if r.get("batch"):
-        _em_segundo_plano(_conferir_publicacao(envio_id, ag["dataset_id"], r["batch"]))
+        _em_segundo_plano(_conferir_publicacao(envio_id, destino, r["batch"]))
     await _tirar_da_quarentena(e)
     _limpar_local(envio_id)
     return _publico(db.get_envio(envio_id), user)
@@ -799,7 +815,7 @@ async def excluir(envio_id: int, dados: AcaoAdminIn, admin: dict = Depends(exigi
 class ChaveConhecimentoIn(BaseModel):
     chave: str = Field(min_length=1, max_length=200)
     # chave restrita a uma base só (boa prática): o id da base, que aparece no endereço dela no Dify
-    base_id: str = Field(default="", max_length=64)
+    base_id: str = Field(default="", max_length=400)  # um ou mais IDs, separados por vírgula
 
 
 RX_CHAVE_DS = re.compile(r"(dataset|ds)-[A-Za-z0-9]{16,64}")
@@ -827,21 +843,26 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
         if e.status != 403:
             raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
         # 403 ao listar: chave restrita a bases específicas. Funciona, desde que se saiba qual é a base.
-        base_id = dados.base_id.strip()
-        if not base_id:
-            raise HTTPException(400, "Essa chave é restrita a uma base. Informe o ID da base: abra a base no Dify e "
-                                     "copie o código que aparece no endereço, depois de /datasets/.")
-        if not RX_UUID.fullmatch(base_id):
-            raise HTTPException(400, "ID da base inválido (copie o código do endereço da base no Dify).")
-        try:
-            base = await dify.base_info(base_id, chave)
-        except dify.DifyErro:
-            raise HTTPException(400, "Essa chave não tem acesso à base informada. Confira o ID da base.")
-        restrita, restrita_nome = base_id, str(base.get("name") or "")
+        ids = list(dict.fromkeys(i for i in re.split(r"[\s,;]+", dados.base_id.strip()) if i))
+        if not ids:
+            raise HTTPException(400, "Essa chave é restrita a uma ou mais bases. Informe o ID de cada base (separados por "
+                                     "vírgula): abra a base no Dify e copie o código que aparece no endereço, depois de /datasets/.")
+        nomes = []
+        for base_id in ids[:10]:
+            if not RX_UUID.fullmatch(base_id):
+                raise HTTPException(400, f"ID de base inválido: {base_id[:40]} (copie o código do endereço da base no Dify).")
+            try:
+                base = await dify.base_info(base_id, chave)
+            except dify.DifyErro:
+                raise HTTPException(400, f"Essa chave não tem acesso à base {base_id}. Confira o ID.")
+            nomes.append(str(base.get("name") or base_id))
+        restrita, restrita_nome = ",".join(ids[:10]), ", ".join(nomes)
     except httpx.HTTPError:
         raise HTTPException(502, "Não foi possível falar com o Dify.")
     if restrita:
-        presos = [a["nome"] for a in db.list_agentes() if a.get("dataset_id") and a["dataset_id"] != restrita]
+        permitidas = set(restrita.split(","))
+        presos = [a["nome"] for a in db.list_agentes()
+                  if {b for b in (a.get("dataset_id"), a.get("dataset_feedback_id")) if b} - permitidas]
         if presos:
             raise HTTPException(400, "Essa chave só acessa a base informada, mas estes agentes usam outra base: "
                                      + ", ".join(presos) + ". Troque a base deles antes, ou use uma chave geral.")
@@ -989,7 +1010,7 @@ def _criar_envio_texto(ag: dict, username: str, origem: str, nome: str, texto: s
     if len(recentes) >= AVALIACOES_POR_HORA:
         raise HTTPException(429, "Muitas avaliações enviadas para aprovação na última hora. A avaliação foi registrada no "
                                  "Dify, mas não foi para a fila agora.")
-    envio_id = db.criar_envio(agente_id=ag["id"], agente_nome=ag["nome"], dataset_id=ag["dataset_id"], username=username,
+    envio_id = db.criar_envio(agente_id=ag["id"], agente_nome=ag["nome"], dataset_id=base_destino(ag, origem), username=username,
                               arquivo_nome=nome, arquivo_ext="md", tamanho=len(dados), sha256=sha,
                               justificativa=justificativa[:1000], status="processando", origem=origem, **extras)
     os.makedirs(_pasta(envio_id), exist_ok=True)
@@ -1097,7 +1118,7 @@ async def bases_do_dify(admin: dict = Depends(exigir_admin)):
     """Bases do Dify para o admin escolher em qual o conhecimento aprovado de cada agente entra."""
     _exigir_chave_ds()
     try:
-        bases = [await dify.base_info(base_restrita())] if base_restrita() else await dify.bases_listar()
+        bases = [await dify.base_info(b) for b in bases_restritas()] if bases_restritas() else await dify.bases_listar()
     except dify.DifyErro as e:
         raise HTTPException(502, f"O Dify não listou as bases ({e.mensagem}).")
     except httpx.HTTPError:
@@ -1107,6 +1128,8 @@ async def bases_do_dify(admin: dict = Depends(exigir_admin)):
     for a in db.list_agentes():
         if a.get("dataset_id"):
             em_uso.setdefault(a["dataset_id"], []).append(a["nome"])
+        if a.get("dataset_feedback_id") and a["dataset_feedback_id"] != a.get("dataset_id"):
+            em_uso.setdefault(a["dataset_feedback_id"], []).append(f"{a['nome']} (feedbacks)")
     return {"pode_criar": not base_restrita(), "itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
                        "tecnica": b.get("indexing_technique"), "agentes": em_uso.get(b["id"], [])}
                       for b in bases if b.get("id") != quarentena and b.get("provider", "vendor") != "external"]}
@@ -1120,9 +1143,8 @@ async def validar_base(dataset_id: str) -> str:
         raise HTTPException(400, "Base de conhecimento inválida.")
     if dataset_id == db.get_meta("quarentena_dataset"):
         raise HTTPException(400, "A base de quarentena não pode receber conhecimento aprovado.")
-    if base_restrita() and dataset_id != base_restrita():
-        raise HTTPException(400, f"A chave cadastrada só tem acesso à base "
-                                 f"\"{db.get_meta('dify_dataset_restrita_nome') or base_restrita()}\".")
+    if bases_restritas() and dataset_id not in bases_restritas():
+        raise HTTPException(400, f"A chave cadastrada só tem acesso a: {db.get_meta('dify_dataset_restrita_nome') or base_restrita()}.")
     try:
         base = await dify.base_info(dataset_id)
     except dify.DifyErro as e:

@@ -792,7 +792,7 @@ ok(r.status_code == 200 and r.json()["status"] == "desativado", "conhecimento an
 secao("chave restrita a uma base só (Feedback)")
 httpx.post(f"{FAKE}/teste/vincular", json={"base": FB})
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA})
-ok(r.status_code == 400 and "ID da base" in r.json()["detail"], "chave restrita sem o ID da base -> 400 explicando onde achar")
+ok(r.status_code == 400 and "ID de cada base" in r.json()["detail"], "chave restrita sem o ID da base -> 400 explicando onde achar")
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": DS_PU})
 ok(r.status_code == 400 and "não tem acesso" in r.json()["detail"], "ID de outra base -> 400")
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": FB})
@@ -809,6 +809,37 @@ ok(adm.post(f"/api/conhecimento/envios/{vr['id']}/aprovar", json={"motivo": ""})
 docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
 ok(any(d["base"] == FB and d["name"] == f"resposta-validada-{mr[:8]}.md" for d in docs.values()), "entra na base Feedback")
 ok(adm.get(f"/api/conhecimento/envios/{vr['id']}/trechos").json()["itens"], "trechos do aprovado lidos da Feedback com a chave restrita")
+
+secao("duas bases: arquivos em 'Documentos', feedbacks em 'Feedback'")
+DOCB = httpx.post(f"{FAKE}/v1/datasets", headers={"Authorization": f"Bearer {CHAVE_CONHECIMENTO}"}, json={"name": "Documentos"}).json()["id"]
+httpx.post(f"{FAKE}/teste/vincular", json={"base": DOCB})
+r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": f"{FB}, {DOCB}"})
+ok(r.status_code == 200 and set(r.json()["restrita"].split(",")) == {FB, DOCB} and "Documentos" in r.json()["restrita_nome"],
+   "chave restrita a duas bases (IDs separados por vírgula)")
+ok({b["id"] for b in adm.get("/api/admin/conhecimento/bases").json()["itens"]} == {FB, DOCB}, "lista as duas bases da chave")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_feedback_id": DS_PU}).status_code == 400, "base fora da chave para feedbacks -> 400")
+r = adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": DOCB, "dataset_feedback_id": FB})
+ok(r.status_code == 200 and r.json()["dataset_id"] == DOCB and r.json()["dataset_feedback_id"] == FB, "PU: arquivos em Documentos, feedbacks em Feedback")
+r = enviar(adm, "manual-duas-bases.txt", b"Manual que vai para a base de documentos. " * 20)
+ea = esperar(adm, r.json()["id"])
+ok(adm.post(f"/api/conhecimento/envios/{ea['id']}/aprovar", json={"motivo": ""}).json()["dataset_id"] == DOCB, "arquivo aprovado vai para Documentos")
+code, e2b = conversar(adm, PU, "Pergunta para a base de feedbacks")
+m2b = [x for x in e2b if x["t"] == "fim"][0]["message_id"]
+v2b = adm.post(f"/api/agentes/{PU}/mensagens/{m2b}/feedback", json={"avaliacao": "like", "conversation_id": e2b[0]["conversation_id"]}).json()["envio"]
+esperar(adm, v2b["id"])
+ok(adm.post(f"/api/conhecimento/envios/{v2b['id']}/aprovar", json={"motivo": ""}).json()["dataset_id"] == FB, "feedback aprovado vai para Feedback")
+docs = httpx.get(f"{FAKE}/teste/docs").json()["docs"]
+ok(any(d["base"] == DOCB and d["name"] == "manual-duas-bases.txt" for d in docs.values())
+   and any(d["base"] == FB and d["name"] == f"resposta-validada-{m2b[:8]}.md" for d in docs.values()), "cada um na sua base no Dify")
+ok(adm.post(f"/api/conhecimento/envios/{ea['id']}/desativar", json={"motivo": "teste duas bases"}).json()["status"] == "desativado",
+   "admin desativa o arquivo na base em que ele entrou")
+ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_feedback_id": ""}).json()["dataset_feedback_id"] is None, "sem base de feedbacks")
+code, e3b = conversar(adm, PU, "Pergunta sem base de feedbacks")
+m3b = [x for x in e3b if x["t"] == "fim"][0]["message_id"]
+v3b = adm.post(f"/api/agentes/{PU}/mensagens/{m3b}/feedback", json={"avaliacao": "like", "conversation_id": e3b[0]["conversation_id"]}).json()["envio"]
+esperar(adm, v3b["id"])
+ok(adm.post(f"/api/conhecimento/envios/{v3b['id']}/aprovar", json={"motivo": ""}).json()["dataset_id"] == DOCB,
+   "sem base de feedbacks, o feedback vai para a base dos arquivos")
 
 secao("agente removido não deixa envios órfãos")
 code, e4 = conversar(adm, PU, "Pergunta antes de remover o agente")

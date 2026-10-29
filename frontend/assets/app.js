@@ -1514,6 +1514,7 @@ async function salvarAgente(e) {
     corpo = { nome, descricao: $('#agente-descricao').value.trim(), sugestoes: textoParaSugestoes($('#agente-sugestoes').value),
       recebe_conhecimento: $('#agente-recebe').checked, autoaprovacao: $('#agente-autoaprovacao').checked };
     if ($('#agente-base').value && $('#agente-base').value !== (a.dataset_id || '')) corpo.dataset_id = $('#agente-base').value;
+    if ($('#agente-base-feedback').value !== (a.dataset_feedback_id || '')) corpo.dataset_feedback_id = $('#agente-base-feedback').value;
     if (chave) corpo.chave = chave;
   } else {
     if (!chave) { erro.textContent = 'Cole a chave da API do Dify (começa com app-).'; erro.hidden = false; return; }
@@ -2264,7 +2265,7 @@ async function carregarConfigConhecimento() {
   try {
     const c = await getJSON('/api/admin/conhecimento/config');
     $('#conh-config-status').textContent = c.chave_configurada
-      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}${c.restrita ? `, restrita à base "${c.restrita_nome || c.restrita}"` : ', acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
+      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}${c.restrita ? `, restrita a: ${c.restrita_nome || c.restrita}` : ', acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
       : 'Falta cadastrar a chave de API de Conhecimento do Dify para os agentes poderem receber arquivos.';
     $('#btn-chave-conh').textContent = c.chave_configurada ? 'Trocar chave' : 'Cadastrar chave';
     $('#cartao-conhecimento').classList.toggle('pendente', !c.chave_configurada);
@@ -2328,7 +2329,7 @@ async function carregarBasesNoDialogo(a) {
     basesDify = [];
     sel.innerHTML += `<option value="" disabled>(${esc(e.message)})</option>`;
   }
-  if (!podeCriar) sel.innerHTML = '';  // chave restrita: só a base da chave
+  if (!podeCriar) sel.innerHTML = '';  // chave restrita: só as bases da chave
   for (const b of basesDify) {
     const outros = b.agentes.filter((n) => n !== a.nome);
     const o = document.createElement('option');
@@ -2338,6 +2339,17 @@ async function carregarBasesNoDialogo(a) {
   }
   if (atual && !basesDify.some((b) => b.id === atual)) sel.insertAdjacentHTML('beforeend', `<option value="${esc(atual)}">(base atual, não listada)</option>`);
   sel.value = atual || (!podeCriar && basesDify[0] ? basesDify[0].id : '');
+  // base dos feedbacks: vazio = a mesma dos arquivos
+  const fb = $('#agente-base-feedback');
+  fb.innerHTML = '<option value="">A mesma base dos arquivos</option>';
+  for (const b of basesDify) {
+    const o = document.createElement('option');
+    o.value = b.id;
+    o.textContent = b.nome;
+    fb.appendChild(o);
+  }
+  if (a.dataset_feedback_id && !basesDify.some((b) => b.id === a.dataset_feedback_id)) fb.insertAdjacentHTML('beforeend', `<option value="${esc(a.dataset_feedback_id)}">(base atual, não listada)</option>`);
+  fb.value = a.dataset_feedback_id || '';
 }
 
 /* ---- correção de resposta (👎) ---- */

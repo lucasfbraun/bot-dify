@@ -132,7 +132,8 @@ COLUNAS_NOVAS = {
     "agentes": {
         "recebe_conhecimento": "INTEGER NOT NULL DEFAULT 0",
         "autoaprovacao": "INTEGER NOT NULL DEFAULT 1",
-        "dataset_id": "TEXT",
+        "dataset_id": "TEXT",           # base para os arquivos enviados
+        "dataset_feedback_id": "TEXT",  # base para os feedbacks (👍/👎); vazio = a mesma dos arquivos
     },
     # envios que nascem de uma avaliação no chat (👍 resposta validada / 👎 correção)
     "envios": {
@@ -297,7 +298,7 @@ def auditar(autor: str, acao: str, alvo: str = "", detalhe: str = "") -> None:
 
 # ------------------------------------------------------------------ agentes
 CAMPOS_AGENTE = ("nome", "descricao", "icone", "cor", "modo", "chave", "sugestoes", "ativo", "recebe_conhecimento",
-                 "autoaprovacao", "dataset_id")
+                 "autoaprovacao", "dataset_id", "dataset_feedback_id")
 
 
 def _agente(r) -> dict | None:
@@ -474,7 +475,7 @@ def criar_envio(**campos) -> int:
 
 CAMPOS_ENVIO = {"status", "enviado_nome", "convertido", "ocr", "paginas", "caracteres", "trechos", "alertas",
                 "quarentena_doc", "destino_doc", "destino_batch", "erro", "decidido_por", "decidido_em", "motivo",
-                "autoaprovado", "resposta_corrigida"}
+                "autoaprovado", "resposta_corrigida", "dataset_id"}
 
 
 def atualizar_envio(envio_id: int, **campos) -> None:
