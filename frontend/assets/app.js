@@ -2261,9 +2261,12 @@ async function decidir(e, acao) {
 }
 
 /* ---- administração: chave de conhecimento, agentes que recebem e aprovadores ---- */
+let configConh = null;
+
 async function carregarConfigConhecimento() {
   try {
     const c = await getJSON('/api/admin/conhecimento/config');
+    configConh = c;
     $('#conh-config-status').textContent = c.chave_configurada
       ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}${c.restrita ? `, restrita a: ${c.restrita_nome || c.restrita}` : ', acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
       : 'Falta cadastrar a chave de API de Conhecimento do Dify para os agentes poderem receber arquivos.';
@@ -2274,9 +2277,30 @@ async function carregarConfigConhecimento() {
   }
 }
 
+/* lista de bases da chave restrita: uma linha por base, com "+ Adicionar base" e remover */
+function linhaBaseChave(valor = '') {
+  const d = document.createElement('div');
+  d.className = 'linha-base-chave';
+  d.innerHTML = `<input class="base-chave-id" autocomplete="off" spellcheck="false" maxlength="64" placeholder="ID da base (ex.: 3f2a8c1e-…)" aria-label="ID da base">
+    <button type="button" class="btn-icone" aria-label="Remover esta base" title="Remover">${ICONE.lixo}</button>`;
+  $('input', d).value = valor;
+  $('button', d).addEventListener('click', () => {
+    d.remove();
+    if (!$$('.linha-base-chave', $('#chave-conh-bases')).length) $('#chave-conh-bases').appendChild(linhaBaseChave());
+  });
+  return d;
+}
+
+function idsBasesChave() {
+  return $$('.base-chave-id', $('#chave-conh-bases')).map((i) => i.value.trim()).filter(Boolean);
+}
+
 function abrirChaveConhecimento() {
   $('#chave-conh').value = '';
-  $('#chave-conh-base').value = '';
+  const lista = $('#chave-conh-bases');
+  lista.innerHTML = '';
+  const atuais = (configConh?.restrita || '').split(',').filter(Boolean);
+  for (const id of (atuais.length ? atuais : [''])) lista.appendChild(linhaBaseChave(id));
   $('#chave-conh-erro').hidden = true;
   $('#dlg-chave-conh').showModal();
   setTimeout(() => $('#chave-conh').focus(), 30);
@@ -2291,7 +2315,7 @@ async function salvarChaveConhecimento(e) {
   btn.disabled = true;
   btn.textContent = 'Testando no Dify…';
   try {
-    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim(), base_id: $('#chave-conh-base').value.trim() });
+    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim(), base_id: idsBasesChave().join(',') });
     $('#dlg-chave-conh').close();
     toast('Chave de conhecimento salva.');
     carregarConfigConhecimento();
@@ -2530,6 +2554,11 @@ function ligarEventos() {
   $('#dlg-envio').addEventListener('close', () => { envioAberto = null; });
   $('#btn-chave-conh').addEventListener('click', abrirChaveConhecimento);
   $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
+  $('#chave-conh-add').addEventListener('click', () => {
+    const linha = linhaBaseChave();
+    $('#chave-conh-bases').appendChild(linha);
+    $('input', linha).focus();
+  });
   $('#form-correcao').addEventListener('submit', enviarCorrecao);
   $('#menu-tema').addEventListener('click', alternarTema);
   $('#menu-sair').addEventListener('click', sair);

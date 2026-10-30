@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=6">
+  <link rel="stylesheet" href="/assets/app.css?v=7">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -439,9 +439,10 @@
       <p class="muted dica">No Dify: <b>Conhecimento</b> &gt; <b>API</b> (canto superior direito) &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b>. A chave fica só no servidor e aparece mascarada.</p>
       <label for="chave-conh">Chave</label>
       <input id="chave-conh" type="password" autocomplete="off" spellcheck="false" placeholder="dataset-…" maxlength="200">
-      <label for="chave-conh-base">ID das bases (só se a chave for restrita)</label>
-      <input id="chave-conh-base" autocomplete="off" spellcheck="false" placeholder="ex.: 3f2a8c1e-…, 9b7d4e20-…" maxlength="400">
-      <p class="muted dica">Recomendado: restringir a chave às bases que recebem o conhecimento aprovado (por exemplo, <b>Feedback</b> e <b>Documentos</b>). Informe o ID de cada uma, separados por vírgula. Para achar o ID, abra a base no Dify e copie o código do endereço, logo depois de <code>/datasets/</code>. Com chave geral, deixe em branco.</p>
+      <label>Bases que a chave alcança (só se a chave for restrita)</label>
+      <div id="chave-conh-bases" class="lista-bases-chave"></div>
+      <button class="btn btn-texto btn-add-base" id="chave-conh-add" type="button">+ Adicionar base</button>
+      <p class="muted dica">Recomendado: restringir a chave às bases que recebem o conhecimento aprovado (por exemplo, <b>Feedback</b> e <b>Documentos</b>). Adicione uma linha por base. Para achar o ID, abra a base no Dify e copie o código do endereço, logo depois de <code>/datasets/</code>. Com chave geral, deixe em branco.</p>
       <p id="chave-conh-erro" class="erro" role="alert" hidden></p>
       <div class="dialogo-acoes">
         <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
@@ -472,6 +473,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=6" type="module"></script>
+  <script src="/assets/app.js?v=7" type="module"></script>
 </body>
 </html>
