@@ -2268,39 +2268,90 @@ async function carregarConfigConhecimento() {
     const c = await getJSON('/api/admin/conhecimento/config');
     configConh = c;
     $('#conh-config-status').textContent = c.chave_configurada
-      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}${c.restrita ? `, restrita a: ${c.restrita_nome || c.restrita}` : ', acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
+      ? `Chave do Dify: ${c.chave_mascarada} (${c.origem === 'tela' ? 'cadastrada aqui' : 'do .env'}, ${c.chave_restrita ? 'restrita' : 'acesso a todas as bases'}) · conversor/OCR: ${c.conversor ? 'ligado' : 'desligado'} · até ${c.max_mb} MB`
       : 'Falta cadastrar a chave de API de Conhecimento do Dify para os agentes poderem receber arquivos.';
     $('#btn-chave-conh').textContent = c.chave_configurada ? 'Trocar chave' : 'Cadastrar chave';
     $('#cartao-conhecimento').classList.toggle('pendente', !c.chave_configurada);
+    carregarBasesAdmin(c);
   } catch (err) {
     $('#conh-config-status').textContent = err.message;
   }
 }
 
-/* lista de bases da chave restrita: uma linha por base, com "+ Adicionar base" e remover */
-function linhaBaseChave(valor = '') {
-  const d = document.createElement('div');
-  d.className = 'linha-base-chave';
-  d.innerHTML = `<input class="base-chave-id" autocomplete="off" spellcheck="false" maxlength="64" placeholder="ID da base (ex.: 3f2a8c1e-…)" aria-label="ID da base">
-    <button type="button" class="btn-icone" aria-label="Remover esta base" title="Remover">${ICONE.lixo}</button>`;
-  $('input', d).value = valor;
-  $('button', d).addEventListener('click', () => {
-    d.remove();
-    if (!$$('.linha-base-chave', $('#chave-conh-bases')).length) $('#chave-conh-bases').appendChild(linhaBaseChave());
-  });
-  return d;
+/* ---- Bases de conhecimento (cadastradas): "+ Adicionar base de conhecimento", como "+ Adicionar agente" ---- */
+async function carregarBasesAdmin(c) {
+  const lista = $('#lista-bases');
+  $('#btn-add-base').disabled = !c.chave_configurada;
+  if (!c.chave_configurada) {
+    lista.innerHTML = '<p class="muted">Cadastre a chave de conhecimento acima para adicionar bases.</p>';
+    return;
+  }
+  let itens = [];
+  try {
+    itens = (await getJSON('/api/admin/conhecimento/bases?cadastradas=1')).itens;
+  } catch (e) {
+    lista.innerHTML = '';
+    lista.appendChild(erroBox(e.message));
+    return;
+  }
+  lista.innerHTML = itens.length ? '' : `<p class="muted">Nenhuma base cadastrada ainda. Clique em <b>Adicionar base de conhecimento</b>${c.chave_restrita ? ' (com chave restrita, é obrigatório)' : ''}.</p>`;
+  for (const b of itens) {
+    const d = document.createElement('div');
+    d.className = `agente-linha base-linha${b.indisponivel ? ' inativo' : ''}`;
+    d.innerHTML = `<span class="agente-icone grande" aria-hidden="true">📚</span>
+      <div class="info">
+        <div class="nome">${esc(b.nome)}</div>
+        <div class="sub mono">${esc(b.id)}</div>
+        <div class="sub">${b.indisponivel ? '<b>A chave não alcança esta base</b>' : (b.agentes.length ? `Usada por: ${esc(b.agentes.join(', '))}` : 'Ainda não usada por nenhum agente')}</div>
+      </div>
+      <div class="qtd">${b.documentos != null ? `${b.documentos} documento${b.documentos === 1 ? '' : 's'}` : ''}</div>
+      <button class="btn-icone rem" aria-label="Remover ${esc(b.nome)}" title="Remover da plataforma">${ICONE.lixo}</button>`;
+    $('.rem', d).addEventListener('click', async () => {
+      const ok = await confirmar({ titulo: 'Remover base?', texto: `"${b.nome}" sai da lista da plataforma. Nada é apagado no Dify.`, ok: 'Remover' });
+      if (ok === null) return;
+      try {
+        await api(`/api/admin/conhecimento/bases/${encodeURIComponent(b.id)}`, { metodo: 'DELETE' });
+        toast('Base removida da plataforma.');
+        carregarConfigConhecimento();
+      } catch (e) {
+        toast(e.message, 6000);
+      }
+    });
+    lista.appendChild(d);
+  }
 }
 
-function idsBasesChave() {
-  return $$('.base-chave-id', $('#chave-conh-bases')).map((i) => i.value.trim()).filter(Boolean);
+function abrirDialogoBase() {
+  $('#base-id').value = '';
+  $('#base-erro').hidden = true;
+  $('#dlg-base').showModal();
+  setTimeout(() => $('#base-id').focus(), 30);
+}
+
+async function salvarBase(e) {
+  e.preventDefault();
+  if (e.submitter?.value === 'cancel') { $('#dlg-base').close(); return; }
+  const erro = $('#base-erro');
+  const btn = $('#base-salvar');
+  erro.hidden = true;
+  btn.disabled = true;
+  btn.textContent = 'Conferindo no Dify…';
+  try {
+    const r = await enviarJSON('/api/admin/conhecimento/bases', 'POST', { base_id: $('#base-id').value.trim() });
+    $('#dlg-base').close();
+    toast(`Base "${r.nome}" cadastrada. Agora escolha-a no agente (lápis do agente).`, 6000);
+    carregarConfigConhecimento();
+  } catch (err) {
+    erro.textContent = err.message;
+    erro.hidden = false;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Adicionar';
+  }
 }
 
 function abrirChaveConhecimento() {
   $('#chave-conh').value = '';
-  const lista = $('#chave-conh-bases');
-  lista.innerHTML = '';
-  const atuais = (configConh?.restrita || '').split(',').filter(Boolean);
-  for (const id of (atuais.length ? atuais : [''])) lista.appendChild(linhaBaseChave(id));
   $('#chave-conh-erro').hidden = true;
   $('#dlg-chave-conh').showModal();
   setTimeout(() => $('#chave-conh').focus(), 30);
@@ -2315,7 +2366,7 @@ async function salvarChaveConhecimento(e) {
   btn.disabled = true;
   btn.textContent = 'Testando no Dify…';
   try {
-    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim(), base_id: idsBasesChave().join(',') });
+    await enviarJSON('/api/admin/conhecimento/config', 'PUT', { chave: $('#chave-conh').value.trim() });
     $('#dlg-chave-conh').close();
     toast('Chave de conhecimento salva.');
     carregarConfigConhecimento();
@@ -2554,11 +2605,8 @@ function ligarEventos() {
   $('#dlg-envio').addEventListener('close', () => { envioAberto = null; });
   $('#btn-chave-conh').addEventListener('click', abrirChaveConhecimento);
   $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
-  $('#chave-conh-add').addEventListener('click', () => {
-    const linha = linhaBaseChave();
-    $('#chave-conh-bases').appendChild(linha);
-    $('input', linha).focus();
-  });
+  $('#btn-add-base').addEventListener('click', abrirDialogoBase);
+  $('#form-base').addEventListener('submit', salvarBase);
   $('#form-correcao').addEventListener('submit', enviarCorrecao);
   $('#menu-tema').addEventListener('click', alternarTema);
   $('#menu-sair').addEventListener('click', sair);

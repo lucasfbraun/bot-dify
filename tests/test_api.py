@@ -374,8 +374,10 @@ ok(adm.get("/api/admin/conhecimento/config").json()["chave_configurada"] is Fals
 r = adm.patch(f"/api/admin/agentes/{PU}", json={"recebe_conhecimento": True})
 ok(r.status_code == 400 and "chave de API de Conhecimento" in r.json()["detail"], "ligar sem chave -> 400 explicando onde cadastrar")
 ok(adm.put("/api/admin/conhecimento/config", json={"chave": "abc"}).status_code == 400, "chave em formato errado -> 400")
+ok(adm.put("/api/admin/conhecimento/config", json={"chave": "dataset-NaoExiste00000000000"}).status_code == 400,
+   "chave que o Dify não conhece -> 400")
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA})
-ok(r.status_code == 400 and "restrita" in r.json()["detail"], "chave recusada/restrita -> 400 explicando")
+ok(r.status_code == 200 and r.json()["chave_restrita"] is True, "chave restrita é aceita (marcada como restrita)")
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO})
 cfg = r.json()
 ok(r.status_code == 200 and cfg["chave_configurada"] and cfg["origem"] == "tela" and CHAVE_CONHECIMENTO not in json.dumps(cfg),
@@ -791,13 +793,23 @@ ok(r.status_code == 200 and r.json()["status"] == "desativado", "conhecimento an
 
 secao("chave restrita a uma base só (Feedback)")
 httpx.post(f"{FAKE}/teste/vincular", json={"base": FB})
-r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA})
-ok(r.status_code == 400 and "ID de cada base" in r.json()["detail"], "chave restrita sem o ID da base -> 400 explicando onde achar")
 r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": DS_PU})
-ok(r.status_code == 400 and "não tem acesso" in r.json()["detail"], "ID de outra base -> 400")
-r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": FB})
-cfg = r.json()
-ok(r.status_code == 200 and cfg["restrita"] == FB and cfg["restrita_nome"] == "Feedback", "chave restrita aceita, presa à base Feedback")
+ok(r.status_code == 400 and "não alcança" in r.json()["detail"], "base que a chave não alcança -> 400")
+r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA})
+ok(r.status_code == 200 and r.json()["chave_restrita"] is True and r.json()["bases"] == [], "chave restrita aceita (as bases vêm depois)")
+ok(adm.get("/api/admin/conhecimento/bases").json()["itens"] == [], "com chave restrita e nada cadastrado, a lista vem vazia")
+ok(adm.post("/api/admin/conhecimento/bases", json={"base_id": "nao-e-uuid"}).status_code == 400, "+ Adicionar base: ID inválido -> 400")
+r = adm.post("/api/admin/conhecimento/bases", json={"base_id": DS_PU})
+ok(r.status_code == 400 and "não alcança" in r.json()["detail"], "+ Adicionar base: base fora da chave -> 400")
+r = adm.post("/api/admin/conhecimento/bases", json={"base_id": FB})
+ok(r.status_code == 200 and r.json()["nome"] == "Feedback", "+ Adicionar base: Feedback cadastrada (nome lido do Dify)")
+ok(adm.post("/api/admin/conhecimento/bases", json={"base_id": FB}).status_code == 409, "a mesma base de novo -> 409")
+ok(maria.post("/api/admin/conhecimento/bases", json={"base_id": FB}).status_code in (401, 403), "usuário comum não cadastra base")
+cfg = adm.get("/api/admin/conhecimento/config").json()
+ok(cfg["restrita"] == FB and cfg["restrita_nome"] == "Feedback" and cfg["bases"] == [{"id": FB, "nome": "Feedback"}],
+   "configuração mostra a base cadastrada")
+cad = adm.get("/api/admin/conhecimento/bases", params={"cadastradas": 1}).json()["itens"]
+ok([b["id"] for b in cad] == [FB] and cad[0]["agentes"], "lista das cadastradas, com quem usa cada uma")
 lb = adm.get("/api/admin/conhecimento/bases").json()
 ok(lb["pode_criar"] is False and [b["id"] for b in lb["itens"]] == [FB], "lista só a base da chave (sem 'criar nova')")
 ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": DS_PU}).status_code == 400, "não deixa escolher outra base")
@@ -813,9 +825,12 @@ ok(adm.get(f"/api/conhecimento/envios/{vr['id']}/trechos").json()["itens"], "tre
 secao("duas bases: arquivos em 'Documentos', feedbacks em 'Feedback'")
 DOCB = httpx.post(f"{FAKE}/v1/datasets", headers={"Authorization": f"Bearer {CHAVE_CONHECIMENTO}"}, json={"name": "Documentos"}).json()["id"]
 httpx.post(f"{FAKE}/teste/vincular", json={"base": DOCB})
-r = adm.put("/api/admin/conhecimento/config", json={"chave": CHAVE_CONHECIMENTO_RESTRITA, "base_id": f"{FB}, {DOCB}"})
-ok(r.status_code == 200 and set(r.json()["restrita"].split(",")) == {FB, DOCB} and "Documentos" in r.json()["restrita_nome"],
-   "chave restrita a duas bases (IDs separados por vírgula)")
+r = adm.post("/api/admin/conhecimento/bases", json={"base_id": DOCB})
+cfg = adm.get("/api/admin/conhecimento/config").json()
+ok(r.status_code == 200 and set(cfg["restrita"].split(",")) == {FB, DOCB} and "Documentos" in cfg["restrita_nome"],
+   "+ Adicionar base: segunda base (Documentos) cadastrada")
+r = adm.delete(f"/api/admin/conhecimento/bases/{FB}")
+ok(r.status_code == 400 and "em uso" in r.json()["detail"], "não remove base em uso por agente")
 ok({b["id"] for b in adm.get("/api/admin/conhecimento/bases").json()["itens"]} == {FB, DOCB}, "lista as duas bases da chave")
 ok(adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_feedback_id": DS_PU}).status_code == 400, "base fora da chave para feedbacks -> 400")
 r = adm.patch(f"/api/admin/agentes/{PU}", json={"dataset_id": DOCB, "dataset_feedback_id": FB})

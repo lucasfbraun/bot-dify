@@ -160,10 +160,12 @@ A plataforma conta quanto texto foi extraído e avisa o aprovador quando veio po
 ### Configurar (uma vez)
 
 1. **Chave de conhecimento do Dify**: no Dify, abra **Conhecimento → API** (canto superior direito) → **Chave da API** → **Criar nova chave**. Na plataforma: **Administração → Agentes → Envio de conhecimento pelos usuários → Cadastrar chave**. A plataforma testa a chave antes de salvar; ela fica só no servidor e aparece mascarada.
-   - **Recomendado (menor acesso possível): chave restrita às bases que vão receber o conhecimento** (por exemplo, **Feedback** e **Documentos**). Ao criar a chave no Dify, restrinja-a a essas bases. Na plataforma, em **"Bases que a chave alcança"**, coloque o ID de cada base numa linha (use **"+ Adicionar base"** para a segunda, e a lixeira para tirar uma; ao reabrir, as bases já cadastradas aparecem preenchidas): abra cada base no Dify e copie o código que aparece no endereço, logo depois de `/datasets/` (ex.: `https://dify…/datasets/3f2a8c1e-…/documents`). Com chave restrita, a plataforma só enxerga essas bases e não dá para criar bases novas pela plataforma. Se algum agente estiver usando uma base fora da lista, a chave é recusada e a mensagem diz qual agente ajustar antes.
-   - Com a **chave geral do workspace**, deixe o ID em branco: a plataforma lista todas as bases e pode criar uma nova por agente.
+   - **Recomendado (menor acesso possível): chave restrita às bases que vão receber o conhecimento** (por exemplo, **Feedback** e **Documentos**). Ao criar a chave no Dify, restrinja-a a essas bases. A plataforma aceita a chave e mostra "restrita" no quadro; as bases são cadastradas no passo seguinte.
+   - Com a **chave geral do workspace**, cadastrar as bases é opcional: sem nenhuma cadastrada, a plataforma lista todas as bases do Dify nos agentes e pode criar uma nova por agente.
    - Também dá para usar `DIFY_DATASET_API_KEY` no `.env` (só chave geral); a chave cadastrada na tela tem prioridade.
-2. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"** e escolha as bases nos dois campos:
+   - Ao trocar por uma chave restrita, a plataforma confere se ela alcança todas as bases cadastradas e as que os agentes usam; se não alcançar alguma, recusa e diz qual.
+2. **Cadastrar as bases**: em **Administração → Agentes → Bases de conhecimento**, clique em **"+ Adicionar base de conhecimento"** (como em "+ Adicionar agente") e cole o **ID da base**: abra a base no Dify e copie o código que aparece no endereço, logo depois de `/datasets/` (ex.: `https://dify…/datasets/3f2a8c1e-…/documents`). A plataforma confere no Dify e mostra o nome. Repita para cada base (por exemplo, Feedback e Documentos). A lista mostra o nome, o ID, quantos documentos a base tem e quais agentes usam cada uma; a lixeira tira a base da plataforma (nada é apagado no Dify) e só funciona se nenhum agente estiver usando a base.
+3. **Ligar o recebimento no agente**: **Administração → Agentes → editar o agente → "Receber conhecimento dos usuários"** e escolha as bases nos dois campos:
    - **"Base para os arquivos enviados"**: onde entram os arquivos aprovados (por exemplo, **Documentos - PU**). Pode ser uma base que você já criou no Dify ou, só com chave geral, **"Criar uma base nova"** (a plataforma cria **Colaborativo - Nome do agente**).
    - **"Base para os feedbacks do chat"**: onde entram as respostas validadas (👍) e as correções (👎) aprovadas (por exemplo, **Feedback - PU**). Deixando **"A mesma base dos arquivos"**, os feedbacks vão para a base dos arquivos.
 
@@ -172,9 +174,9 @@ A plataforma conta quanto texto foi extraído e avisa o aprovador quando veio po
    As listas mostram as bases que a chave alcança, com o número de documentos e qual agente já usa cada uma. Uma base pode estar vazia: se ainda não tiver tipo de indexação, o primeiro documento aprovado entra em alta qualidade (com embeddings). Recomendação: **uma base de feedbacks e uma de arquivos por agente** e separadas dos documentos oficiais. Assim, o que é aprovado num agente não aparece em outro, e, se os feedbacks se mostrarem ruins, basta desligar a base de feedbacks do agente no Dify sem perder os documentos.
 
    Dá para trocar as bases depois: os próximos conhecimentos aprovados entram na nova, e os que já foram aprovados continuam na base em que entraram (e continuam podendo ser desativados ou excluídos pelo admin, desde que a chave alcance essa base).
-3. **Ligar as bases ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar →** as bases escolhidas (por exemplo, **Documentos - PU** e **Feedback - PU**) → **Publicar**.
-4. **Marcar os aprovadores**: **Administração → Usuários → botão "Não aprova"/"Aprova: …"** na linha da pessoa → marque os agentes.
-5. **Autoaprovação**: no mesmo diálogo do agente, **"Permitir que o aprovador aprove o próprio envio"** (vem ligada). Desligada, o envio de um aprovador espera outro aprovador do mesmo agente.
+4. **Ligar as bases ao agente no Dify** (o único passo manual, porque a API do Dify não faz isso): abra o agente no Dify → **Contexto/Conhecimento → Adicionar →** as bases escolhidas (por exemplo, **Documentos - PU** e **Feedback - PU**) → **Publicar**.
+5. **Marcar os aprovadores**: **Administração → Usuários → botão "Não aprova"/"Aprova: …"** na linha da pessoa → marque os agentes.
+6. **Autoaprovação**: no mesmo diálogo do agente, **"Permitir que o aprovador aprove o próprio envio"** (vem ligada). Desligada, o envio de um aprovador espera outro aprovador do mesmo agente.
 
 ### Como usar
 

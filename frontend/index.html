@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=7">
+  <link rel="stylesheet" href="/assets/app.css?v=8">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -263,6 +263,16 @@
             </div>
             <button class="btn btn-texto" type="button" id="btn-chave-conh">Cadastrar chave</button>
           </div>
+          <div class="secao-bases" id="secao-bases">
+            <div class="barra-aba">
+              <p class="muted"><b>Bases de conhecimento</b> do Dify onde entra o conhecimento aprovado. Depois de cadastrar, escolha em cada agente qual base recebe os arquivos e qual recebe os feedbacks.</p>
+              <button class="btn btn-primario" id="btn-add-base" type="button">
+                <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+                Adicionar base de conhecimento
+              </button>
+            </div>
+            <div id="lista-bases" class="lista-usuarios"></div>
+          </div>
           <div class="barra-aba">
             <p class="muted">Agentes de conversa do Dify. Cada um usa a própria chave de API, que fica só no servidor.</p>
             <button class="btn btn-primario" id="btn-add-agente">
@@ -432,6 +442,21 @@
     </form>
   </dialog>
 
+  <!-- modal: adicionar base de conhecimento -->
+  <dialog id="dlg-base" class="dialogo">
+    <form method="dialog" class="dialogo-corpo" id="form-base" novalidate>
+      <h3>Adicionar base de conhecimento</h3>
+      <p class="muted dica">Crie a base no Dify (Conhecimento &gt; Criar &gt; base pronta &gt; conhecimento vazio). Depois abra a base e copie o código que aparece no endereço, logo depois de <code>/datasets/</code>. A plataforma confere no Dify e mostra o nome.</p>
+      <label for="base-id">ID da base</label>
+      <input id="base-id" autocomplete="off" spellcheck="false" maxlength="64" placeholder="ex.: 3f2a8c1e-0bc6-4d98-ba9e-4e64587263e1">
+      <p id="base-erro" class="erro" role="alert" hidden></p>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
+        <button class="btn btn-primario" id="base-salvar" type="submit">Adicionar</button>
+      </div>
+    </form>
+  </dialog>
+
   <!-- modal: chave de conhecimento do Dify -->
   <dialog id="dlg-chave-conh" class="dialogo">
     <form method="dialog" class="dialogo-corpo" id="form-chave-conh" novalidate>
@@ -439,10 +464,7 @@
       <p class="muted dica">No Dify: <b>Conhecimento</b> &gt; <b>API</b> (canto superior direito) &gt; <b>Chave da API</b> &gt; <b>Criar nova chave</b>. A chave fica só no servidor e aparece mascarada.</p>
       <label for="chave-conh">Chave</label>
       <input id="chave-conh" type="password" autocomplete="off" spellcheck="false" placeholder="dataset-…" maxlength="200">
-      <label>Bases que a chave alcança (só se a chave for restrita)</label>
-      <div id="chave-conh-bases" class="lista-bases-chave"></div>
-      <button class="btn btn-texto btn-add-base" id="chave-conh-add" type="button">+ Adicionar base</button>
-      <p class="muted dica">Recomendado: restringir a chave às bases que recebem o conhecimento aprovado (por exemplo, <b>Feedback</b> e <b>Documentos</b>). Adicione uma linha por base. Para achar o ID, abra a base no Dify e copie o código do endereço, logo depois de <code>/datasets/</code>. Com chave geral, deixe em branco.</p>
+      <p class="muted dica">Recomendado: restringir a chave, no Dify, só às bases que vão receber o conhecimento aprovado. Depois de salvar a chave, cadastre essas bases em <b>Bases de conhecimento</b> (botão <b>+ Adicionar base de conhecimento</b>).</p>
       <p id="chave-conh-erro" class="erro" role="alert" hidden></p>
       <div class="dialogo-acoes">
         <button class="btn btn-texto" value="cancel" formnovalidate>Cancelar</button>
@@ -473,6 +495,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=7" type="module"></script>
+  <script src="/assets/app.js?v=8" type="module"></script>
 </body>
 </html>

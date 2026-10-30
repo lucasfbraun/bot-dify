@@ -254,14 +254,37 @@ def _exigir_chave_ds():
                                  "Conhecimento (no Dify: Conhecimento > API > Criar chave).")
 
 
-# ------------------------------------------------------------------ chave de conhecimento: geral ou restrita a uma base
+# ------------------------------------------------------------------ chave de conhecimento e bases cadastradas
+def bases_cadastradas() -> list[dict]:
+    """Bases cadastradas em "Bases de conhecimento" ([{id, nome}]). Lê também o formato da versão anterior."""
+    bruto = db.get_meta("bases_conhecimento")
+    if bruto:
+        try:
+            return [b for b in json.loads(bruto) if b.get("id")]
+        except ValueError:
+            return []
+    ids = [b for b in (db.get_meta("dify_dataset_restrita") or "").split(",") if b]
+    nomes = (db.get_meta("dify_dataset_restrita_nome") or "").split(", ")
+    return [{"id": i, "nome": nomes[n] if n < len(nomes) and nomes[n] else i} for n, i in enumerate(ids)]
+
+
+def _gravar_bases(lista: list[dict]) -> None:
+    db.set_meta("bases_conhecimento", json.dumps(lista, ensure_ascii=False))
+    db.set_meta("dify_dataset_restrita", "")
+    db.set_meta("dify_dataset_restrita_nome", "")
+
+
+def chave_restrita() -> bool:
+    """A chave de conhecimento é restrita a algumas bases (o Dify recusa listar/criar bases com ela)."""
+    return db.get_meta("dify_chave_restrita") == "1" or bool(db.get_meta("dify_dataset_restrita"))
+
+
 def bases_restritas() -> list[str]:
-    """Ids das bases quando a chave de conhecimento é restrita a algumas bases ([] = chave geral do workspace)."""
-    return [b for b in (db.get_meta("dify_dataset_restrita") or "").split(",") if b]
+    """Bases que a plataforma pode usar quando a chave é restrita ([] = chave geral do workspace)."""
+    return [b["id"] for b in bases_cadastradas()] if chave_restrita() else []
 
 
 def base_restrita() -> str:
-    """Compatível com a versão anterior: '' quando a chave é geral."""
     return ",".join(bases_restritas())
 
 
@@ -279,10 +302,14 @@ async def preparar_agente(ag: dict) -> str:
     _exigir_chave_ds()
     if ag.get("dataset_id"):
         return ag["dataset_id"]
-    if len(bases_restritas()) == 1:
-        return bases_restritas()[0]
-    if bases_restritas():
-        raise HTTPException(400, "A chave alcança mais de uma base: escolha em qual entram os arquivos aprovados.")
+    if chave_restrita():
+        ids = bases_restritas()
+        if len(ids) == 1:
+            return ids[0]
+        if not ids:
+            raise HTTPException(400, "Cadastre a base em \"Bases de conhecimento\" (botão \"+ Adicionar base de "
+                                     "conhecimento\") antes de ligar o recebimento.")
+        raise HTTPException(400, "Há mais de uma base cadastrada: escolha em qual entram os arquivos aprovados.")
     try:
         base = await dify.base_criar(f"Colaborativo - {ag['nome']}"[:40],
                                      f"Conhecimento enviado pelos usuários e aprovado na plataforma para o agente "
@@ -814,8 +841,8 @@ async def excluir(envio_id: int, dados: AcaoAdminIn, admin: dict = Depends(exigi
 
 class ChaveConhecimentoIn(BaseModel):
     chave: str = Field(min_length=1, max_length=200)
-    # chave restrita a uma base só (boa prática): o id da base, que aparece no endereço dela no Dify
-    base_id: str = Field(default="", max_length=400)  # um ou mais IDs, separados por vírgula
+    # opcional (versão anterior): IDs de bases para já cadastrar junto, separados por vírgula
+    base_id: str = Field(default="", max_length=400)
 
 
 RX_CHAVE_DS = re.compile(r"(dataset|ds)-[A-Za-z0-9]{16,64}")
@@ -824,8 +851,10 @@ RX_CHAVE_DS = re.compile(r"(dataset|ds)-[A-Za-z0-9]{16,64}")
 @router.get("/api/admin/conhecimento/config")
 def config_conhecimento(admin: dict = Depends(exigir_admin)):
     chave, origem = dify.chave_conhecimento()
+    bases = bases_cadastradas()
     return {"chave_configurada": bool(chave), "chave_mascarada": f"{chave[:6]}…{chave[-4:]}" if chave else "",
-            "origem": origem, "restrita": base_restrita(), "restrita_nome": db.get_meta("dify_dataset_restrita_nome") or "",
+            "origem": origem, "chave_restrita": chave_restrita(), "bases": bases,
+            "restrita": base_restrita(), "restrita_nome": ", ".join(b["nome"] for b in bases) if chave_restrita() else "",
             "conversor": bool(settings.CONVERSOR_URL), "max_mb": settings.CONHECIMENTO_MAX_MB}
 
 
@@ -834,7 +863,7 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
     chave = dados.chave.strip()
     if not RX_CHAVE_DS.fullmatch(chave):
         raise HTTPException(400, "Chave inválida. No Dify: Conhecimento > API > Criar chave (começa com dataset- ou ds-).")
-    restrita, restrita_nome = "", ""
+    restrita = False
     try:
         await dify.testar_chave_conhecimento(chave)
     except dify.DifyErro as e:
@@ -842,33 +871,35 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
             raise HTTPException(400, "O Dify recusou essa chave. Confira se copiou a chave inteira.")
         if e.status != 403:
             raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
-        # 403 ao listar: chave restrita a bases específicas. Funciona, desde que se saiba qual é a base.
-        ids = list(dict.fromkeys(i for i in re.split(r"[\s,;]+", dados.base_id.strip()) if i))
-        if not ids:
-            raise HTTPException(400, "Essa chave é restrita a uma ou mais bases. Informe o ID de cada base (separados por "
-                                     "vírgula): abra a base no Dify e copie o código que aparece no endereço, depois de /datasets/.")
-        nomes = []
-        for base_id in ids[:10]:
-            if not RX_UUID.fullmatch(base_id):
-                raise HTTPException(400, f"ID de base inválido: {base_id[:40]} (copie o código do endereço da base no Dify).")
-            try:
-                base = await dify.base_info(base_id, chave)
-            except dify.DifyErro:
-                raise HTTPException(400, f"Essa chave não tem acesso à base {base_id}. Confira o ID.")
-            nomes.append(str(base.get("name") or base_id))
-        restrita, restrita_nome = ",".join(ids[:10]), ", ".join(nomes)
+        restrita = True  # 403 ao listar: chave restrita a bases específicas (boa prática)
     except httpx.HTTPError:
         raise HTTPException(502, "Não foi possível falar com o Dify.")
+    bases = bases_cadastradas()
+    for base_id in list(dict.fromkeys(i for i in re.split(r"[\s,;]+", dados.base_id.strip()) if i))[:10]:
+        if base_id not in [b["id"] for b in bases]:
+            bases.append({"id": base_id, "nome": await _nome_da_base(base_id, chave)})
     if restrita:
-        permitidas = set(restrita.split(","))
-        presos = [a["nome"] for a in db.list_agentes()
-                  if {b for b in (a.get("dataset_id"), a.get("dataset_feedback_id")) if b} - permitidas]
-        if presos:
-            raise HTTPException(400, "Essa chave só acessa a base informada, mas estes agentes usam outra base: "
-                                     + ", ".join(presos) + ". Troque a base deles antes, ou use uma chave geral.")
+        # a chave nova precisa alcançar as bases cadastradas e as que os agentes já usam
+        usadas = {b["id"]: b["nome"] for b in bases}
+        for a in db.list_agentes():
+            for b in (a.get("dataset_id"), a.get("dataset_feedback_id")):
+                if b:
+                    usadas.setdefault(b, f"base do agente {a['nome']}")
+        fora = []
+        for base_id, nome in usadas.items():
+            try:
+                await dify.base_info(base_id, chave)
+            except dify.DifyErro:
+                donos = [a["nome"] for a in db.list_agentes() if base_id in (a.get("dataset_id"), a.get("dataset_feedback_id"))]
+                fora.append(nome + (f" (usada por {', '.join(donos)})" if donos else ""))
+            except httpx.HTTPError:
+                raise HTTPException(502, "Não foi possível falar com o Dify.")
+        if fora:
+            raise HTTPException(400, "Essa chave é restrita e não alcança: " + "; ".join(fora) + ". No Dify, inclua essas "
+                                     "bases na restrição da chave, ou troque a base dos agentes antes.")
     db.set_meta("dify_dataset_key", chave)
-    db.set_meta("dify_dataset_restrita", restrita)
-    db.set_meta("dify_dataset_restrita_nome", restrita_nome)
+    db.set_meta("dify_chave_restrita", "1" if restrita else "")
+    _gravar_bases(bases)
     db.auditar(admin["username"], "chave_conhecimento", "", "chave de conhecimento cadastrada/trocada")
     return config_conhecimento(admin)
 
@@ -876,8 +907,7 @@ async def salvar_chave_conhecimento(dados: ChaveConhecimentoIn, admin: dict = De
 @router.delete("/api/admin/conhecimento/config")
 def remover_chave_conhecimento(admin: dict = Depends(exigir_admin)):
     db.set_meta("dify_dataset_key", "")
-    db.set_meta("dify_dataset_restrita", "")
-    db.set_meta("dify_dataset_restrita_nome", "")
+    db.set_meta("dify_chave_restrita", "")
     db.auditar(admin["username"], "chave_conhecimento", "", "chave de conhecimento removida da tela")
     return config_conhecimento(admin)
 
@@ -1113,25 +1143,94 @@ async def corrigir_resposta(dados: CorrecaoIn, user: dict = Depends(usuario_atua
 RX_UUID = re.compile(r"[0-9a-fA-F-]{32,36}")
 
 
-@router.get("/api/admin/conhecimento/bases")
-async def bases_do_dify(admin: dict = Depends(exigir_admin)):
-    """Bases do Dify para o admin escolher em qual o conhecimento aprovado de cada agente entra."""
-    _exigir_chave_ds()
+async def _nome_da_base(base_id: str, chave: str | None = None) -> str:
+    """Confere a base no Dify (com a chave informada ou a cadastrada) e devolve o nome."""
+    if not RX_UUID.fullmatch(base_id):
+        raise HTTPException(400, f"ID de base inválido: {base_id[:40]} (copie o código do endereço da base no Dify, "
+                                 "logo depois de /datasets/).")
     try:
-        bases = [await dify.base_info(b) for b in bases_restritas()] if bases_restritas() else await dify.bases_listar()
+        base = await dify.base_info(base_id, chave)
+    except dify.DifyErro as e:
+        if e.status in (401, 403, 404):
+            raise HTTPException(400, "A chave não alcança essa base, ou o ID está errado. Se a chave for restrita, inclua "
+                                     "a base na restrição da chave no Dify.")
+        raise HTTPException(502, f"O Dify não respondeu como esperado ({e.mensagem}).")
+    except httpx.HTTPError:
+        raise HTTPException(502, "Não foi possível falar com o Dify.")
+    if base.get("provider") == "external":
+        raise HTTPException(400, "Bases externas não recebem arquivos.")
+    return str(base.get("name") or base_id)
+
+
+def _em_uso() -> dict[str, list[str]]:
+    em_uso: dict[str, list[str]] = {}
+    for a in db.list_agentes():
+        if a.get("dataset_id"):
+            em_uso.setdefault(a["dataset_id"], []).append(f"{a['nome']} (arquivos)" if a.get("dataset_feedback_id")
+                                                          and a["dataset_feedback_id"] != a["dataset_id"] else a["nome"])
+        if a.get("dataset_feedback_id") and a["dataset_feedback_id"] != a.get("dataset_id"):
+            em_uso.setdefault(a["dataset_feedback_id"], []).append(f"{a['nome']} (feedbacks)")
+    return em_uso
+
+
+class BaseIn(BaseModel):
+    base_id: str = Field(min_length=1, max_length=64)
+
+
+@router.post("/api/admin/conhecimento/bases")
+async def adicionar_base(dados: BaseIn, admin: dict = Depends(exigir_admin)):
+    """+ Adicionar base de conhecimento: confere no Dify e cadastra (fica disponível para escolher nos agentes)."""
+    _exigir_chave_ds()
+    base_id = dados.base_id.strip()
+    bases = bases_cadastradas()
+    if base_id in [b["id"] for b in bases]:
+        raise HTTPException(409, "Essa base já está cadastrada.")
+    nome = await _nome_da_base(base_id)
+    bases.append({"id": base_id, "nome": nome})
+    _gravar_bases(bases)
+    db.auditar(admin["username"], "adicionar_base", base_id, nome)
+    return {"id": base_id, "nome": nome}
+
+
+@router.delete("/api/admin/conhecimento/bases/{base_id}")
+def remover_base(base_id: str, admin: dict = Depends(exigir_admin)):
+    bases = bases_cadastradas()
+    alvo = next((b for b in bases if b["id"] == base_id), None)
+    if not alvo:
+        raise HTTPException(404, "Base não cadastrada.")
+    usada = _em_uso().get(base_id)
+    if usada:
+        raise HTTPException(400, f"A base está em uso por: {', '.join(usada)}. Troque a base desses agentes antes.")
+    _gravar_bases([b for b in bases if b["id"] != base_id])
+    db.auditar(admin["username"], "remover_base", base_id, alvo["nome"])
+    return {"ok": True}
+
+
+@router.get("/api/admin/conhecimento/bases")
+async def bases_do_dify(cadastradas: int = 0, admin: dict = Depends(exigir_admin)):
+    """Bases para escolher nos agentes: as cadastradas em "Bases de conhecimento"; com chave geral e nada cadastrado,
+    todas as do Dify. cadastradas=1: só as cadastradas (para a lista da tela)."""
+    _exigir_chave_ds()
+    salvas = bases_cadastradas()
+    try:
+        if salvas or cadastradas or chave_restrita():
+            bases = []
+            for b in salvas:
+                try:
+                    bases.append(await dify.base_info(b["id"]))
+                except dify.DifyErro:  # a chave não alcança mais: mostra assim mesmo, para o admin resolver
+                    bases.append({"id": b["id"], "name": b["nome"], "indisponivel": True})
+        else:
+            bases = await dify.bases_listar()
     except dify.DifyErro as e:
         raise HTTPException(502, f"O Dify não listou as bases ({e.mensagem}).")
     except httpx.HTTPError:
         raise HTTPException(502, "Não foi possível falar com o Dify.")
     quarentena = db.get_meta("quarentena_dataset")
-    em_uso: dict[str, list[str]] = {}
-    for a in db.list_agentes():
-        if a.get("dataset_id"):
-            em_uso.setdefault(a["dataset_id"], []).append(a["nome"])
-        if a.get("dataset_feedback_id") and a["dataset_feedback_id"] != a.get("dataset_id"):
-            em_uso.setdefault(a["dataset_feedback_id"], []).append(f"{a['nome']} (feedbacks)")
-    return {"pode_criar": not base_restrita(), "itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
-                       "tecnica": b.get("indexing_technique"), "agentes": em_uso.get(b["id"], [])}
+    em_uso = _em_uso()
+    return {"pode_criar": not chave_restrita(), "itens": [{"id": b["id"], "nome": b.get("name") or "", "documentos": b.get("document_count"),
+                       "tecnica": b.get("indexing_technique"), "agentes": em_uso.get(b["id"], []),
+                       "indisponivel": bool(b.get("indisponivel"))}
                       for b in bases if b.get("id") != quarentena and b.get("provider", "vendor") != "external"]}
 
 
@@ -1143,8 +1242,9 @@ async def validar_base(dataset_id: str) -> str:
         raise HTTPException(400, "Base de conhecimento inválida.")
     if dataset_id == db.get_meta("quarentena_dataset"):
         raise HTTPException(400, "A base de quarentena não pode receber conhecimento aprovado.")
-    if bases_restritas() and dataset_id not in bases_restritas():
-        raise HTTPException(400, f"A chave cadastrada só tem acesso a: {db.get_meta('dify_dataset_restrita_nome') or base_restrita()}.")
+    if chave_restrita() and dataset_id not in bases_restritas():
+        raise HTTPException(400, "Essa base não está cadastrada. Cadastre em \"Bases de conhecimento\" (botão "
+                                 "\"+ Adicionar base de conhecimento\") antes de escolher no agente.")
     try:
         base = await dify.base_info(dataset_id)
     except dify.DifyErro as e:
