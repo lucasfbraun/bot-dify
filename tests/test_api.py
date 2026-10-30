@@ -6,12 +6,12 @@ import os
 import re
 import struct
 import sys
+import time
 import wave
+import zipfile
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
-
-import zipfile
 
 import httpx
 
@@ -259,25 +259,45 @@ ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [COM]}).s
 secao("ouvir a resposta (Texto para voz)")
 ok(adm.get(f"/api/agentes/{PU}/info").json()["voz"] == {"ativo": True, "automatica": False}, "PU com Texto para voz (sem leitura automática)")
 ok(maria.get(f"/api/agentes/{COM}/info").json()["voz"]["ativo"] is False, "comercial sem Texto para voz")
-r = maria.post(f"/api/agentes/{COM}/ouvir", json={"texto": "Olá"})
+r = maria.get(f"/api/agentes/{COM}/conversas/{cid_maria}/mensagens/{'0' * 36}/ouvir")
 ok(r.status_code == 400 and "Texto para voz" in r.json()["detail"], "agente sem o recurso -> 400 explicando o que ligar")
-ok(maria.post(f"/api/agentes/{PU}/ouvir", json={"texto": "Olá"}).status_code == 403, "agente não liberado -> 403")
+ok(maria.get(f"/api/agentes/{PU}/conversas/{cid_maria}/mensagens/{'0' * 36}/ouvir").status_code == 403, "agente não liberado -> 403")
+
+
+def resposta_de_teste(texto):
+    """Cria (no Dify falso) uma conversa do admin no PU com uma resposta, e devolve a rota de ouvir."""
+    c = httpx.post(f"{FAKE_URL}/teste/conversa", json={"chave": CHAVE_PU, "user": "ad:admin.ti", "resposta": texto}).json()
+    return f"/api/agentes/{PU}/conversas/{c['id']}/mensagens/{c['mensagens'][0]}/ouvir"
+
+
 MD = ("## Visão geral\n\nO **FLEXX AG 2032** é *convencional*. Veja [o boletim](http://x/b.pdf).\n\n"
       "| Lote | Data |\n|---|---|\n| 1 | 2 |\n\n- item **um**\n> citação\n```\ncodigo()\n```\nFim.")
-r = adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": MD})
-ok(r.status_code == 200 and r.headers["content-type"].startswith("audio/") and len(r.content) > 1000, "devolve o áudio do Dify")
+rota_md = resposta_de_teste(MD)
+inicio = time.time()
+with adm.stream("GET", rota_md) as r:
+    pedacos = []
+    for p in r.iter_bytes():
+        pedacos.append((time.time() - inicio, len(p)))
+ok(r.status_code == 200 and r.headers["content-type"].startswith("audio/") and sum(n for _, n in pedacos) > 1000,
+   "devolve o áudio do Dify")
+ok(pedacos[0][0] < 1.0 and pedacos[-1][0] > 1.0, f"repassa o áudio enquanto chega (1º trecho em {pedacos[0][0]:.1f} s, fim em {pedacos[-1][0]:.1f} s)")
 ok(r.headers.get("cache-control") == "no-store", "áudio não fica em cache")
+ok(maria.get(rota_md.replace(f"/agentes/{PU}/", f"/agentes/{COM}/")).status_code == 400, "outro agente sem o recurso -> 400")
+ok(adm.get(f"/api/agentes/{PU}/conversas/{rota_md.split('/')[5]}/mensagens/{'0' * 36}/ouvir").status_code == 404,
+   "resposta que não existe -> 404")
 falado = httpx.get(f"{FAKE_URL}/teste/ultima-fala").json()
 ok(falado.get("user") == "ad:admin.ti" and "message_id" not in falado, "vai para o Dify como texto, em nome da pessoa")
 ok(falado.get("text") == "Visão geral.\nO FLEXX AG 2032 é convencional. Veja o boletim.\nA tabela está na tela.\nitem um\ncitação\nFim.",
    f"tira a formatação, não lê tabela nem código ({falado.get('text')!r})")
-adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "Frase de teste. " * 600})
+adm.get(resposta_de_teste("Frase de teste. " * 600))
 falado = httpx.get(f"{FAKE_URL}/teste/ultima-fala").json()["text"]
 ok(len(falado) <= 4100 and falado.endswith("O restante da resposta está na tela."), "resposta longa: corta no fim de uma frase e avisa")
-ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "| a | b |\n|---|---|"}).status_code == 200, "só tabela: lê o aviso")
-ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "```\nx\n```"}).status_code == 400, "nada para ler -> 400")
-ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": ""}).status_code == 422, "texto vazio -> 422")
-ok(httpx.post(f"{B}/api/agentes/{PU}/ouvir", json={"texto": "x"}, cookies=adm.cookies).status_code == 403, "sem cabeçalho CSRF -> 403")
+ok(adm.get(resposta_de_teste("| a | b |\n|---|---|")).status_code == 200, "só tabela: lê o aviso")
+ok(adm.get(resposta_de_teste("```\nx\n```")).status_code == 400, "nada para ler -> 400")
+ok(maria.get(rota_md).status_code == 403, "maria não ouve resposta do admin (agente não liberado)")
+ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM]}).status_code == 200, "(libera o PU para maria)")
+ok(maria.get(rota_md).status_code == 404, "nem com o agente liberado: a conversa é do admin -> 404")
+ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [COM]}).status_code == 200, "(revoga de novo)")
 ok("media-src 'self' blob:" in anon.get("/").headers["content-security-policy"], "CSP permite tocar o áudio gerado")
 ok(any(x["evento"] == "ouvir" for x in adm.get("/api/admin/registros", params={"usuario": "admin.ti"}).json()["itens"]),
    "leitura aparece nos registros")

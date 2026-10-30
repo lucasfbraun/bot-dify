@@ -817,14 +817,14 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes, aid, cid }) {
   acoes.className = 'msg-acoes';
   acoes.innerHTML = `
     <button class="btn-icone" data-a="copiar" aria-label="Copiar resposta" title="Copiar">${ICONE.copiar}</button>
-    <button class="btn-icone btn-ouvir" data-a="ouvir" aria-label="Ouvir resposta" title="Ouvir">${ICONE.ouvir}</button>
+    ${id && cid ? `<button class="btn-icone btn-ouvir" data-a="ouvir" aria-label="Ouvir resposta" title="Ouvir">${ICONE.ouvir}</button>` : ''}
     ${id ? `<button class="btn-icone${avaliacao === 'like' ? ' on' : ''}" data-a="like" aria-label="Resposta útil" title="Resposta útil">${ICONE.like}</button>
     <button class="btn-icone${avaliacao === 'dislike' ? ' on' : ''}" data-a="dislike" aria-label="Resposta ruim" title="Resposta ruim">${ICONE.dislike}</button>` : ''}`;
   acoes.addEventListener('click', async (ev) => {
     const b = ev.target.closest('button');
     if (!b) return;
     if (b.dataset.a === 'ouvir') {
-      alternarLeitura(b, aid, texto);
+      alternarLeitura(b, aid, cid, id);
       return;
     }
     if (b.dataset.a === 'copiar') {
@@ -857,7 +857,8 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes, aid, cid }) {
 
 /* ------------------------------------------------------------------ ouvir a resposta (texto para voz do Dify) */
 /* Uma leitura por vez: o servidor limpa o texto (tabelas e símbolos não são lidos) e o Dify gera o áudio. */
-let leitura = null;  // { botao, audio, url, ctrl }
+let leitura = null;  // { botao, audio, timer }
+const VOZ_ESPERA_MS = 60000;  // sem começar a tocar nesse tempo, desiste e avisa
 
 /* o botão vai em toda resposta e só aparece quando o agente tem "Texto para voz" (a configuração pode chegar
    depois do histórico) */
@@ -868,43 +869,68 @@ function atualizarVoz() {
 
 function pararLeitura() {
   if (!leitura) return;
-  const { botao, audio, url, ctrl } = leitura;
+  const { botao, audio, timer } = leitura;
   leitura = null;
-  ctrl.abort();
-  if (audio) { audio.pause(); audio.removeAttribute('src'); }
-  if (url) URL.revokeObjectURL(url);
+  clearTimeout(timer);
+  audio.pause();
+  audio.removeAttribute('src');
+  audio.load();  // corta o download do áudio que ainda está chegando
   botao.classList.remove('on', 'carregando');
   botao.innerHTML = ICONE.ouvir;
   botao.setAttribute('aria-label', 'Ouvir resposta');
   botao.title = 'Ouvir';
 }
 
-async function alternarLeitura(botao, aid, texto, automatica = false) {
+/* O <audio> toca direto da rota do servidor, que repassa o áudio do Dify enquanto ele é gerado:
+   começa a falar no primeiro trecho, sem esperar a resposta inteira virar áudio. */
+async function alternarLeitura(botao, aid, cid, mid, automatica = false) {
   const mesma = leitura?.botao === botao;
   pararLeitura();
   if (mesma) return;
-  const atual = { botao, audio: null, url: null, ctrl: new AbortController() };
+  const url = rota(`/conversas/${encodeURIComponent(cid)}/mensagens/${encodeURIComponent(mid)}/ouvir`, aid);
+  const atual = { botao, audio: new Audio(), timer: null };
   leitura = atual;
   botao.classList.add('on', 'carregando');
   botao.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
   botao.setAttribute('aria-label', 'Parar leitura');
   botao.title = 'Parar';
-  try {
-    const r = await api(rota('/ouvir', aid), { metodo: 'POST', corpo: { texto }, sinal: atual.ctrl.signal });
-    const blob = await r.blob();
+
+  const falhou = async (msg, perguntarAoServidor) => {
     if (leitura !== atual) return;
-    atual.url = URL.createObjectURL(blob);
-    atual.audio = new Audio(atual.url);
-    atual.audio.addEventListener('ended', () => { if (leitura === atual) pararLeitura(); });
+    pararLeitura();
+    if (automatica) return;
+    if (perguntarAoServidor) {
+      // o <audio> não mostra o motivo; os erros do servidor (sem acesso, recurso desligado, cota...) vêm
+      // antes de qualquer áudio, então a consulta é rápida
+      const ctrl = new AbortController();
+      try {
+        await api(url, { sinal: ctrl.signal });
+        ctrl.abort();
+      } catch (e) {
+        if (e.name !== 'AbortError' && e.message) msg = e.message;
+      }
+    }
+    toast(msg, 6000);
+  };
+  atual.audio.addEventListener('playing', () => {
+    if (leitura !== atual) return;
+    clearTimeout(atual.timer);
     botao.classList.remove('carregando');
     botao.innerHTML = ICONE.parar;
+  });
+  atual.audio.addEventListener('ended', () => { if (leitura === atual) pararLeitura(); });
+  atual.audio.addEventListener('error', () => falhou('Não foi possível tocar o áudio.', true));
+  atual.timer = setTimeout(() => falhou('O Dify demorou demais para gerar o áudio. Tente de novo em instantes.', false), VOZ_ESPERA_MS);
+  atual.audio.src = url;
+  try {
     await atual.audio.play();
   } catch (e) {
-    if (leitura !== atual || e.name === 'AbortError') return;
-    pararLeitura();
     // o navegador pode bloquear o som automático; aí a pessoa toca no botão
-    if (automatica && e.name === 'NotAllowedError') return;
-    toast(e.message || 'Não foi possível tocar o áudio.', 5000);
+    if (e.name === 'NotAllowedError' && leitura === atual) {
+      pararLeitura();
+      if (!automatica) toast('O navegador bloqueou o som. Toque no botão de novo.');
+    }
+    // os outros erros chegam pelo evento "error"
   }
 }
 
@@ -1354,7 +1380,7 @@ async function enviarPergunta() {
   finalizarBot(bot, { id: messageId, texto, fontes, aid: agente.id, cid: conversaId });
   if (terminou && !erro && texto && mesmaTela() && estado.info?.voz?.automatica) {
     const b = $('[data-a="ouvir"]', bot.conteudo);
-    if (b) alternarLeitura(b, agente.id, texto, true);
+    if (b) alternarLeitura(b, agente.id, conversaId, messageId, true);
   }
   // se outra resposta já começou (troca rápida de conversa), não mexe no estado dela
   if (estado.abort === ctrl) {

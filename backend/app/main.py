@@ -544,10 +544,6 @@ def texto_para_fala(md: str, limite: int) -> str:
     return texto
 
 
-class OuvirIn(BaseModel):
-    texto: str = Field(min_length=1, max_length=60000)
-
-
 _ERROS_VOZ = {
     "provider_not_initialize": (502, "O modelo de texto para voz do Dify não está configurado. "
                                      "Configure um em Configurações > Provedor de modelos."),
@@ -558,13 +554,33 @@ _ERROS_VOZ = {
 _leituras: dict[str, list[float]] = {}
 
 
-@app.post("/api/agentes/{aid}/ouvir")
-async def ouvir_resposta(dados: OuvirIn, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
-    """Lê a resposta em voz alta com a voz do agente no Dify. O áudio não é guardado: vai direto para o navegador."""
+async def _resposta_da_mensagem(ag: dict, username: str, cid: str, mid: str) -> str:
+    """Texto da resposta, lido no Dify (só acha mensagens da própria pessoa). As recentes vêm na primeira página."""
+    primeira = None
+    for _ in range(20):
+        r = await dify.mensagens(ag["chave"], username, cid, primeira, 100)
+        dados = r.get("data") or []
+        for m in dados:
+            if m.get("id") == mid:
+                return m.get("answer") or ""
+        if not r.get("has_more") or not dados:
+            break
+        primeira = min(dados, key=lambda m: m.get("created_at") or 0)["id"]
+    raise HTTPException(404, "Resposta não encontrada.")
+
+
+@app.get("/api/agentes/{aid}/conversas/{cid}/mensagens/{mid}/ouvir")
+async def ouvir_resposta(cid: str, mid: str, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
+    """Lê a resposta em voz alta com a voz do agente no Dify. GET para o navegador tocar direto (<audio src>),
+    começando no primeiro trecho. O áudio não é guardado: passa direto do Dify para o navegador."""
     if not (await _params_agente(ag))["voz"]["ativo"]:
         raise HTTPException(400, "Este agente não está configurado para ler respostas. No Dify, ligue o recurso "
                                  "\"Texto para voz\" do app e publique.")
-    texto = texto_para_fala(dados.texto, settings.VOZ_MAX_CARACTERES)
+    try:
+        resposta = await _resposta_da_mensagem(ag, user["username"], _id(cid), _id(mid))
+    except dify.DifyErro as e:
+        raise _erro_dify(e)
+    texto = texto_para_fala(resposta, settings.VOZ_MAX_CARACTERES)
     if not texto:
         raise HTTPException(400, "Não há texto para ler nesta resposta.")
     agora = time.time()
@@ -573,7 +589,7 @@ async def ouvir_resposta(dados: OuvirIn, ag: dict = Depends(agente_permitido), u
         raise HTTPException(429, "Muitas leituras na última hora. Tente mais tarde.")
     _leituras[user["username"]] = recentes + [agora]
     try:
-        audio, tipo = await dify.falar(ag["chave"], user["username"], texto)
+        tipo, partes = await dify.falar(ag["chave"], user["username"], texto)
     except dify.DifyErro as e:
         log.warning("Dify text-to-audio %s %s: %s", e.status, e.codigo, e.mensagem)
         if e.codigo in _ERROS_VOZ:
@@ -583,8 +599,16 @@ async def ouvir_resposta(dados: OuvirIn, ag: dict = Depends(agente_permitido), u
     except httpx.HTTPError as e:
         log.warning("Dify inacessível no texto para voz: %s", e)
         raise HTTPException(502, "Não foi possível falar com o Dify. Tente de novo em instantes.")
-    db.registrar_uso(user["username"], ag["id"], ag["nome"], "ouvir", None, f"{len(texto)} caracteres")
-    return Response(audio, media_type=tipo, headers={"Cache-Control": "no-store"})
+    db.registrar_uso(user["username"], ag["id"], ag["nome"], "ouvir", cid, f"{len(texto)} caracteres")
+
+    async def repassar():
+        try:
+            async for pedaco in partes:
+                yield pedaco
+        except httpx.HTTPError as e:  # travou no meio: o navegador recebe o que já chegou
+            log.warning("texto para voz interrompido: %s", e)
+    return StreamingResponse(repassar(), media_type=tipo,
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 # Anexos enviados ao Dify nas últimas 24 h: id -> dono, agente, tipo e nome.

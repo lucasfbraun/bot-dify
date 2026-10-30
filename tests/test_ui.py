@@ -274,6 +274,7 @@ with sync_playwright() as p:
         ok(True, "o áudio toca")
     except Exception as e:  # noqa: BLE001
         ok(False, f"o áudio toca -> {str(e)[:120]}")
+    checar("áudio começou: some o carregando e mostra parar", lambda: expect(ouvir).not_to_have_class(re.compile("carregando")))
     print_(adm, "16-ouvindo")
     ouvir.click()
     checar("clicar de novo para a leitura", lambda: expect(ouvir).to_have_attribute("aria-label", "Ouvir resposta"))

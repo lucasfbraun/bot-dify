@@ -125,8 +125,13 @@ async def texto_para_audio(req: Request):
         w.setsampwidth(2)
         w.setframerate(8000)
         w.writeframes(b"\x00\x10" * 8000 * 2)  # 2 s
-    from fastapi.responses import Response
-    return Response(buf.getvalue(), media_type="audio/wav")
+    dados = buf.getvalue()
+
+    async def pedacos():
+        for i in range(0, len(dados), 8000):
+            yield dados[i:i + 8000]
+            await asyncio.sleep(0.3)
+    return StreamingResponse(pedacos(), media_type="audio/wav")
 
 
 @app.get("/teste/ultima-fala")
@@ -224,9 +229,9 @@ async def teste_conversa(req: Request):
     CONVERSAS[cid] = {"id": cid, "name": b.get("nome", "Conversa de teste"), "user": b["user"], "app": b["chave"],
                       "created_at": quando, "updated_at": quando + 60}
     MENSAGENS[cid] = [{"id": str(uuid.uuid4()), "conversation_id": cid, "query": f"Pergunta {i + 1}",
-                       "answer": f"Resposta {i + 1}", "created_at": quando + i, "feedback": None,
+                       "answer": b.get("resposta") or f"Resposta {i + 1}", "created_at": quando + i, "feedback": None,
                        "retriever_resources": []} for i in range(b.get("mensagens", 1))]
-    return {"id": cid}
+    return {"id": cid, "mensagens": [m["id"] for m in MENSAGENS[cid]]}
 
 
 @app.post("/v1/conversations/{cid}/name")

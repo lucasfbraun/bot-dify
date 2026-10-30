@@ -316,7 +316,8 @@ O botão de alto-falante (🔊), junto de copiar e 👍/👎 em cada resposta, a
 
 ### Como usar
 
-- Toque no 🔊: o botão mostra que está carregando e, quando o áudio começa, vira ⏹. Toque de novo para parar.
+- Toque no 🔊: o botão mostra que está carregando e, quando o áudio começa (em poucos segundos, mesmo numa resposta longa), vira ⏹. Toque de novo para parar.
+- Se o Dify não começar a mandar o áudio em 60 segundos, a leitura é cancelada com um aviso.
 - Só uma resposta toca por vez. Começar outra, trocar de conversa ou de agente para a leitura atual.
 - Se a **Reprodução automática** estiver ligada no Dify, a resposta começa a tocar sozinha quando termina de chegar. Alguns navegadores (principalmente o Safari, no iPhone) bloqueiam som automático; aí é só tocar no botão.
 
@@ -339,8 +340,9 @@ Cada leitura gasta créditos do modelo de voz. Por isso há o limite `VOZ_POR_HO
 
 ### Como funciona por dentro
 
-- O navegador manda o texto da resposta para o servidor, que confere o acesso ao agente, limpa o texto e chama `/v1/text-to-audio` do Dify com a chave do agente. O áudio volta direto para o navegador e **não fica guardado** (nem em cache).
-- A CSP libera `media-src 'self' blob:` só para tocar esse áudio.
+- O player do navegador toca direto de `GET /api/agentes/{agente}/conversas/{conversa}/mensagens/{mensagem}/ouvir`. O servidor confere o acesso ao agente, busca o texto da resposta no Dify (só acha mensagens da própria pessoa), limpa o texto e chama `/v1/text-to-audio` com a chave do agente.
+- O Dify gera o áudio frase a frase, e o servidor **repassa cada trecho assim que chega**. Assim o navegador começa a tocar no primeiro trecho, sem esperar a resposta inteira virar áudio (numa resposta longa, isso levaria mais de um minuto).
+- O áudio **não fica guardado** (nem em cache). A CSP libera `media-src` só para o próprio site.
 
 | Variável | Padrão | Para que serve |
 |---|---|---|

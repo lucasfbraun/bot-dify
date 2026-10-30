@@ -136,17 +136,34 @@ async def transcrever(chave: str, username: str, dados: bytes, nome: str, mime: 
     return r.json()
 
 
-async def falar(chave: str, username: str, texto: str) -> tuple[bytes, str]:
+async def falar(chave: str, username: str, texto: str):
     """Texto para voz com a voz configurada no app do Dify (recurso "Text to Speech" ligado).
-    Devolve (áudio, tipo), em geral audio/mpeg."""
-    async with _client(chave, httpx.Timeout(180, connect=15)) as c:
-        r = await c.post("/text-to-audio", json={"text": texto, "user": ident(username)})
-    if r.status_code >= 400:
-        raise _erro(r)
+    O Dify gera o áudio frase a frase: devolve (tipo, partes) para repassar cada trecho assim que chega,
+    sem esperar o áudio inteiro (numa resposta longa, isso leva mais de um minuto)."""
+    c = _client(chave, httpx.Timeout(60, connect=15))  # 60 s sem nenhum trecho novo = travou
+    try:
+        r = await c.send(c.build_request("POST", "/text-to-audio", json={"text": texto, "user": ident(username)}),
+                         stream=True)
+    except BaseException:
+        await c.aclose()
+        raise
     tipo = r.headers.get("content-type", "").split(";")[0].strip().lower()
-    if not tipo.startswith("audio/") or not r.content:
-        raise DifyErro(502, "O Dify não devolveu áudio.")
-    return r.content, tipo
+    if r.status_code >= 400 or not tipo.startswith("audio/"):
+        try:
+            await r.aread()
+        finally:
+            await r.aclose()
+            await c.aclose()
+        raise _erro(r) if r.status_code >= 400 else DifyErro(502, "O Dify não devolveu áudio.")
+
+    async def partes():
+        try:
+            async for pedaco in r.aiter_bytes():
+                yield pedaco
+        finally:
+            await r.aclose()
+            await c.aclose()
+    return tipo, partes()
 
 
 async def enviar_arquivo(chave: str, username: str, dados: bytes, nome: str, mime: str) -> dict:
