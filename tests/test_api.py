@@ -255,6 +255,33 @@ ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM]
 ok(conversar(maria, PU, "anexo do admin", arquivos=[a_pdf["id"]])[0] == 400, "anexo de outra pessoa não pode ser usado -> 400")
 ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [COM]}).status_code == 200, "(revoga de novo)")
 
+# ------------------------------------------------------------------ ouvir a resposta
+secao("ouvir a resposta (Texto para voz)")
+ok(adm.get(f"/api/agentes/{PU}/info").json()["voz"] == {"ativo": True, "automatica": False}, "PU com Texto para voz (sem leitura automática)")
+ok(maria.get(f"/api/agentes/{COM}/info").json()["voz"]["ativo"] is False, "comercial sem Texto para voz")
+r = maria.post(f"/api/agentes/{COM}/ouvir", json={"texto": "Olá"})
+ok(r.status_code == 400 and "Texto para voz" in r.json()["detail"], "agente sem o recurso -> 400 explicando o que ligar")
+ok(maria.post(f"/api/agentes/{PU}/ouvir", json={"texto": "Olá"}).status_code == 403, "agente não liberado -> 403")
+MD = ("## Visão geral\n\nO **FLEXX AG 2032** é *convencional*. Veja [o boletim](http://x/b.pdf).\n\n"
+      "| Lote | Data |\n|---|---|\n| 1 | 2 |\n\n- item **um**\n> citação\n```\ncodigo()\n```\nFim.")
+r = adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": MD})
+ok(r.status_code == 200 and r.headers["content-type"].startswith("audio/") and len(r.content) > 1000, "devolve o áudio do Dify")
+ok(r.headers.get("cache-control") == "no-store", "áudio não fica em cache")
+falado = httpx.get(f"{FAKE_URL}/teste/ultima-fala").json()
+ok(falado.get("user") == "ad:admin.ti" and "message_id" not in falado, "vai para o Dify como texto, em nome da pessoa")
+ok(falado.get("text") == "Visão geral.\nO FLEXX AG 2032 é convencional. Veja o boletim.\nA tabela está na tela.\nitem um\ncitação\nFim.",
+   f"tira a formatação, não lê tabela nem código ({falado.get('text')!r})")
+adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "Frase de teste. " * 600})
+falado = httpx.get(f"{FAKE_URL}/teste/ultima-fala").json()["text"]
+ok(len(falado) <= 4100 and falado.endswith("O restante da resposta está na tela."), "resposta longa: corta no fim de uma frase e avisa")
+ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "| a | b |\n|---|---|"}).status_code == 200, "só tabela: lê o aviso")
+ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": "```\nx\n```"}).status_code == 400, "nada para ler -> 400")
+ok(adm.post(f"/api/agentes/{PU}/ouvir", json={"texto": ""}).status_code == 422, "texto vazio -> 422")
+ok(httpx.post(f"{B}/api/agentes/{PU}/ouvir", json={"texto": "x"}, cookies=adm.cookies).status_code == 403, "sem cabeçalho CSRF -> 403")
+ok("media-src 'self' blob:" in anon.get("/").headers["content-security-policy"], "CSP permite tocar o áudio gerado")
+ok(any(x["evento"] == "ouvir" for x in adm.get("/api/admin/registros", params={"usuario": "admin.ti"}).json()["itens"]),
+   "leitura aparece nos registros")
+
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")
 r = adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM, 9999]})

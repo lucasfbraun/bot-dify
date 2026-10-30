@@ -13,6 +13,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Avaliações viram treinamento**: nos agentes que recebem conhecimento, cada 👍 manda a resposta para aprovação como "resposta validada", e cada 👎 manda para aprovação como "correção". No 👎, a pessoa pode escrever a resposta certa (opcional); se não escrever, o aprovador escreve ao aprovar. Só a resposta correta entra na base do agente.
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Anexos no chat**: nos agentes com "Upload de Arquivo" ligado no Dify, o clipe anexa imagens e documentos (ou um print colado) para o agente analisar naquela pergunta. O arquivo vai direto para o Dify e não fica guardado aqui.
+- **Ouvir a resposta**: nos agentes com "Texto para voz" ligado no Dify, o botão 🔊 lê a resposta com a voz do agente, sem ler tabelas nem símbolos de formatação.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -308,6 +309,43 @@ Tipos aceitos: **imagens** (PNG, JPG, WEBP, GIF) e **documentos** (PDF, Word, Ex
 |---|---|---|
 | `ANEXO_MAX_MB` | `15` | Tamanho máximo do anexo (vale o menor entre este e o limite do Dify). Acima de 15, aumente também `client_max_body_size` no nginx. |
 | `ANEXOS_POR_HORA` | `60` | Anexos por pessoa por hora. |
+
+## Ouvir a resposta
+
+O botão de alto-falante (🔊), junto de copiar e 👍/👎 em cada resposta, aparece **só nos agentes com o recurso "Texto para voz" ligado no Dify**.
+
+### Como usar
+
+- Toque no 🔊: o botão mostra que está carregando e, quando o áudio começa, vira ⏹. Toque de novo para parar.
+- Só uma resposta toca por vez. Começar outra, trocar de conversa ou de agente para a leitura atual.
+- Se a **Reprodução automática** estiver ligada no Dify, a resposta começa a tocar sozinha quando termina de chegar. Alguns navegadores (principalmente o Safari, no iPhone) bloqueiam som automático; aí é só tocar no botão.
+
+### O que é lido
+
+O servidor limpa a resposta antes de mandar para a voz:
+
+- tira negrito, itálico, títulos, marcadores de lista, citações e links (fica só o texto do link);
+- **não lê tabelas**: no lugar de cada tabela, a voz diz *"A tabela está na tela."*;
+- não lê blocos de código nem endereços de internet;
+- respostas longas são lidas até `VOZ_MAX_CARACTERES` (padrão 4000 caracteres, uns 4 minutos de fala), cortando no fim de uma frase, e a voz avisa *"O restante da resposta está na tela."*.
+
+### Como ligar num agente (no Dify)
+
+1. **Modelo de texto para voz no workspace**: em **Configurações → Provedor de modelos**, configure um provedor com modelo *TTS* (por exemplo, OpenAI `tts-1`) e defina-o como padrão de **Texto para voz** em **Modelos do sistema**.
+2. **Recurso no app**: abra o agente → **Recursos** → ligue **Texto para voz**. Em **Línguas**, escolha **Português** e escolha uma voz. Se quiser que toque sozinho, ligue **Reprodução automática**. **Publique.**
+3. Em até 5 minutos, o botão aparece (recarregue a página para ver na hora).
+
+Cada leitura gasta créditos do modelo de voz. Por isso há o limite `VOZ_POR_HORA` (padrão 100 leituras por pessoa por hora), e cada leitura aparece nos registros como *Resposta ouvida*.
+
+### Como funciona por dentro
+
+- O navegador manda o texto da resposta para o servidor, que confere o acesso ao agente, limpa o texto e chama `/v1/text-to-audio` do Dify com a chave do agente. O áudio volta direto para o navegador e **não fica guardado** (nem em cache).
+- A CSP libera `media-src 'self' blob:` só para tocar esse áudio.
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `VOZ_MAX_CARACTERES` | `4000` | Quanto da resposta é lido; o resto fica só na tela. |
+| `VOZ_POR_HORA` | `100` | Leituras por pessoa por hora. |
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

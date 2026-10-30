@@ -42,6 +42,10 @@ class Settings:
     # Vale o menor entre este limite e o do Dify (15 MB para documentos e 10 MB para imagens, por padrão).
     ANEXO_MAX_MB = int(os.getenv("ANEXO_MAX_MB", "15"))
     ANEXOS_POR_HORA = int(os.getenv("ANEXOS_POR_HORA", "60"))
+    # Ouvir a resposta (recurso "Texto para voz" do app no Dify): texto lido no máximo (o resto fica só na tela)
+    # e leituras por pessoa por hora (cada leitura gasta créditos do modelo de voz)
+    VOZ_MAX_CARACTERES = int(os.getenv("VOZ_MAX_CARACTERES", "4000"))
+    VOZ_POR_HORA = int(os.getenv("VOZ_POR_HORA", "100"))
 
     # Envio de conhecimento com aprovação
     # Chave de API de Conhecimento do Dify (ds-...): cria as bases colaborativas e envia/apaga documentos

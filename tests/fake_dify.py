@@ -21,7 +21,7 @@ CHAVE_WORKFLOW = "app-Fluxo00000000000000000"
 APPS = {
     CHAVE_PU: {"name": "Agente Técnico PU(qlik)", "description": "Especialista em poliuretano com acesso ao Qlik.",
                "mode": "agent-chat", "icon": "🧪", "icon_background": "#E4FBCC", "ferramentas": True,
-               "voz_para_texto": True, "anexos": ["image", "document"]},
+               "voz_para_texto": True, "anexos": ["image", "document"], "texto_para_voz": True},
     CHAVE_COMERCIAL: {"name": "Agente Comercial", "description": "Tira dúvidas de catálogo, sem acesso ao ERP.",
                       "mode": "advanced-chat", "icon": "💼", "icon_background": "#D1E9FF", "ferramentas": False,
                       "sugestoes": ["Quais espumas temos para colchões?"]},
@@ -33,6 +33,7 @@ MENSAGENS: dict[str, list] = {}
 ULTIMO_AUDIO: dict = {}
 ARQUIVOS: dict[str, dict] = {}   # /files/upload
 ULTIMO_CHAT: dict = {}           # corpo da última pergunta (o teste confere os arquivos repassados)
+ULTIMA_FALA: dict = {}           # texto mandado para /text-to-audio
 
 RESPOSTA_PU = """## FLEXX AG 2032 — visão geral
 
@@ -102,7 +103,35 @@ async def parametros(req: Request):
                              "allowed_file_upload_methods": ["local_file", "remote_url"], "number_limits": 3,
                              "image": {"enabled": False}}
                             if a.get("anexos") else {"enabled": False, "image": {"enabled": False}}),
+            "text_to_speech": {"enabled": a.get("texto_para_voz", False), "voice": "alloy", "language": "pt-BR",
+                               "autoPlay": "disabled"},
             "system_parameters": {"file_size_limit": 15, "image_file_size_limit": 10}}
+
+
+@app.post("/v1/text-to-audio")
+async def texto_para_audio(req: Request):
+    """Imita o Dify: só com "Texto para voz" ligado; devolve um WAV curto (tocável no navegador)."""
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    b = await req.json()
+    if not a.get("texto_para_voz"):
+        return JSONResponse({"code": "app_unavailable", "message": "TTS is not enabled."}, 400)
+    ULTIMA_FALA.clear()
+    ULTIMA_FALA.update(b)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x10" * 8000 * 2)  # 2 s
+    from fastapi.responses import Response
+    return Response(buf.getvalue(), media_type="audio/wav")
+
+
+@app.get("/teste/ultima-fala")
+async def teste_ultima_fala():
+    return ULTIMA_FALA
 
 
 @app.post("/v1/files/upload")

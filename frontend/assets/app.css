@@ -334,6 +334,11 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 .chip-erro { color: var(--erro); font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip-tirar { border: 0; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; color: var(--texto-suave); }
 .chip-tirar:hover { color: var(--texto); }
+/* ---------- ouvir a resposta ---------- */
+.btn-ouvir { display: none; }
+.com-voz .btn-ouvir { display: inline-grid; }
+.btn-ouvir.on { color: var(--flex-teal-600); }
+.btn-ouvir .spinner { width: 16px; height: 16px; }
 /* ---------- áudio ---------- */
 .btn-microfone, .btn-concluir {
   flex: none; width: 42px; height: 42px; border-radius: 12px; border: 0; cursor: pointer; display: grid; place-items: center;

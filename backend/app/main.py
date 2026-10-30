@@ -90,7 +90,7 @@ async def cabecalhos_seguranca(request: Request, call_next):
     resp.headers.setdefault("Permissions-Policy", "camera=(), microphone=(self), geolocation=()")
     resp.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; "
+        "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; style-src 'self' 'unsafe-inline'; "
         "script-src 'self'; connect-src 'self'; font-src 'self' data:; frame-ancestors 'none'; base-uri 'self'")
     if request.url.path.startswith("/api/"):
         resp.headers.setdefault("Cache-Control", "no-store")
@@ -306,12 +306,16 @@ async def _params_agente(ag: dict) -> dict:
                 "audio": bool((p.get("speech_to_text") or {}).get("enabled")),
                 # recurso "Upload de Arquivo" ligado no app: mostra o botão de anexar
                 "anexos": _anexos_do_app(p),
+                # recurso "Texto para voz" ligado no app: mostra o botão de ouvir (e toca sozinho se autoPlay)
+                "voz": {"ativo": bool((p.get("text_to_speech") or {}).get("enabled")),
+                        "automatica": bool((p.get("text_to_speech") or {}).get("enabled"))
+                        and (p.get("text_to_speech") or {}).get("autoPlay") == "enabled"},
             }}
             _cache_params[ag["id"]] = cache
         except Exception as e:  # noqa: BLE001
             log.warning("parâmetros do Dify indisponíveis (agente %s): %s", ag["id"], e)
             cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False, "audio": False,
-                           "anexos": _anexos_do_app({})}}
+                           "anexos": _anexos_do_app({}), "voz": {"ativo": False, "automatica": False}}}
     return cache["v"]
 
 
@@ -498,6 +502,89 @@ async def transcrever_audio(request: Request, ag: dict = Depends(agente_permitid
         raise HTTPException(422, "Não consegui entender o áudio. Fale mais perto do microfone e tente de novo.")
     db.registrar_uso(user["username"], ag["id"], ag["nome"], "audio", None, f"{len(dados) // 1024} KB")
     return {"texto": texto}
+
+
+# ------------------------------------------------------------------ ouvir a resposta (texto para voz)
+_RX_FALA = [
+    (re.compile(r"```.*?(```|$)", re.S), " "),                            # blocos de código
+    (re.compile(r"!\[[^\]]*\]\([^)]*\)"), " "),                          # imagens
+    (re.compile(r"\[([^\]]+)\]\([^)]*\)"), r"\1"),                        # links: fica o texto
+    (re.compile(r"https?://\S+"), " "),                                  # endereços soltos
+    (re.compile(r"<[^>]+>"), " "),                                       # HTML
+    (re.compile(r"^\s{0,3}#{1,6}\s*(.+?)\s*#*\s*$", re.M), r"\1."),       # títulos viram frase
+    (re.compile(r"^\s*>\s?", re.M), ""),                                 # citações
+    (re.compile(r"^\s*[-*+•]\s+", re.M), ""),                            # marcadores de lista
+    (re.compile(r"^\s*([-*_]\s*){3,}$", re.M), " "),                      # linhas horizontais
+    (re.compile(r"(\*\*|__|~~|`)"), ""),                                  # negrito, riscado, código
+    (re.compile(r"(?<![\w*])[*_](?=\S)(.+?)(?<=\S)[*_](?![\w*])"), r"\1"),  # itálico
+]
+
+
+def texto_para_fala(md: str, limite: int) -> str:
+    """Tira a formatação da resposta (Markdown) para a voz não ler símbolos. Tabelas não são lidas:
+    viram um aviso de que estão na tela. Passando do limite, corta no fim de uma frase e avisa."""
+    linhas, em_tabela = [], False
+    for linha in (md or "").splitlines():
+        if linha.strip().startswith("|"):
+            if not em_tabela:
+                linhas.append("A tabela está na tela.")
+            em_tabela = True
+            continue
+        em_tabela = False
+        linhas.append(linha)
+    texto = "\n".join(linhas)
+    for rx, troca in _RX_FALA:
+        texto = rx.sub(troca, texto)
+    texto = re.sub(r"[ \t]+", " ", texto)
+    texto = re.sub(r"\s*\n\s*", "\n", texto).strip()
+    if len(texto) > limite:
+        corte = texto[:limite]
+        fim = max(corte.rfind(". "), corte.rfind(".\n"), corte.rfind("\n"))
+        texto = (corte[:fim + 1] if fim > limite // 2 else corte).rstrip() + "\nO restante da resposta está na tela."
+    return texto
+
+
+class OuvirIn(BaseModel):
+    texto: str = Field(min_length=1, max_length=60000)
+
+
+_ERROS_VOZ = {
+    "provider_not_initialize": (502, "O modelo de texto para voz do Dify não está configurado. "
+                                     "Configure um em Configurações > Provedor de modelos."),
+    "provider_quota_exceeded": (502, "A cota do modelo de texto para voz acabou. Avise a TI."),
+    "model_currently_not_support": (502, "O modelo de texto para voz do Dify não está disponível no momento."),
+    "provider_not_support_text_to_speech": (502, "O modelo configurado no Dify não faz texto para voz."),
+}
+_leituras: dict[str, list[float]] = {}
+
+
+@app.post("/api/agentes/{aid}/ouvir")
+async def ouvir_resposta(dados: OuvirIn, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
+    """Lê a resposta em voz alta com a voz do agente no Dify. O áudio não é guardado: vai direto para o navegador."""
+    if not (await _params_agente(ag))["voz"]["ativo"]:
+        raise HTTPException(400, "Este agente não está configurado para ler respostas. No Dify, ligue o recurso "
+                                 "\"Texto para voz\" do app e publique.")
+    texto = texto_para_fala(dados.texto, settings.VOZ_MAX_CARACTERES)
+    if not texto:
+        raise HTTPException(400, "Não há texto para ler nesta resposta.")
+    agora = time.time()
+    recentes = [t for t in _leituras.get(user["username"], []) if t > agora - 3600]
+    if len(recentes) >= settings.VOZ_POR_HORA:
+        raise HTTPException(429, "Muitas leituras na última hora. Tente mais tarde.")
+    _leituras[user["username"]] = recentes + [agora]
+    try:
+        audio, tipo = await dify.falar(ag["chave"], user["username"], texto)
+    except dify.DifyErro as e:
+        log.warning("Dify text-to-audio %s %s: %s", e.status, e.codigo, e.mensagem)
+        if e.codigo in _ERROS_VOZ:
+            status, msg = _ERROS_VOZ[e.codigo]
+            raise HTTPException(status, msg)
+        raise _erro_dify(e)
+    except httpx.HTTPError as e:
+        log.warning("Dify inacessível no texto para voz: %s", e)
+        raise HTTPException(502, "Não foi possível falar com o Dify. Tente de novo em instantes.")
+    db.registrar_uso(user["username"], ag["id"], ag["nome"], "ouvir", None, f"{len(texto)} caracteres")
+    return Response(audio, media_type=tipo, headers={"Cache-Control": "no-store"})
 
 
 # Anexos enviados ao Dify nas últimas 24 h: id -> dono, agente, tipo e nome.

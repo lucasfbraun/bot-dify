@@ -10,6 +10,8 @@ const ICONE = {
   like: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 21h4V9H2zm20-11a2 2 0 00-2-2h-6.3l1-4.6v-.3a1.5 1.5 0 00-.4-1L13.2 1 6.6 7.6A2 2 0 006 9v10a2 2 0 002 2h9a2 2 0 001.8-1.2l3-7.1c.1-.2.2-.5.2-.7z"/></svg>',
   dislike: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M22 3h-4v12h4zM2 14a2 2 0 002 2h6.3l-1 4.6v.3a1.5 1.5 0 00.4 1l1.1 1.1 6.6-6.6A2 2 0 0018 15V5a2 2 0 00-2-2H7a2 2 0 00-1.8 1.2l-3 7.1c-.1.2-.2.5-.2.7z"/></svg>',
   editar: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.3V21h3.7L17.8 9.9l-3.7-3.7zM20.7 7a1 1 0 000-1.4l-2.3-2.3a1 1 0 00-1.4 0l-1.8 1.8 3.7 3.7z"/></svg>',
+  ouvir: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9zm13.5 3A4.5 4.5 0 0014 8v8a4.5 4.5 0 002.5-4zM14 3.2v2.1a7 7 0 010 13.4v2.1a9 9 0 000-17.6z"/></svg>',
+  parar: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',
   lixo: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 3h6l1 1h4v2H4V4h4zM5 7h14l-1 14H6zm4 2v10h2V9zm4 0v10h2V9z"/></svg>',
 };
 
@@ -30,6 +32,7 @@ const EVENTO_USO = {
   pergunta: ['Pergunta ao agente', 'ok'],
   erro: ['Erro na resposta', 'falha'],
   audio: ['Áudio transcrito', 'ok'],
+  ouvir: ['Resposta ouvida', 'ok'],
 };
 
 const estado = {
@@ -453,6 +456,7 @@ function aplicarAgenteNaTela() {
 function selecionarAgente(a, { manterConversa = false } = {}) {
   cancelarGravacao();  // o áudio seria transcrito pelo agente anterior
   limparAnexos();      // o anexo foi enviado ao app do Dify do agente anterior
+  atualizarVoz();
   estado.agenteAtual = a;
   estado.info = null;
   estado.conversas = [];
@@ -532,6 +536,7 @@ async function carregarInfo() {
   estado.info = info;
   desenharAbertura();
   atualizarBotaoAnexo();
+  atualizarVoz();
 }
 
 function desenharAbertura() {
@@ -682,6 +687,7 @@ async function apagarConversa(c) {
 }
 
 function limparChat() {
+  pararLeitura();
   estado.conversaAtual = null;
   estado.sessaoChat += 1;
   const box = $('#mensagens');
@@ -702,6 +708,7 @@ function novaConversa(focar = true) {
 
 async function abrirConversa(id, primeiroId = null) {
   pararGeracao(true);
+  if (!primeiroId) pararLeitura();
   fecharLateral();
   const box = $('#mensagens');
   const a = estado.agenteAtual;
@@ -810,11 +817,16 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes, aid, cid }) {
   acoes.className = 'msg-acoes';
   acoes.innerHTML = `
     <button class="btn-icone" data-a="copiar" aria-label="Copiar resposta" title="Copiar">${ICONE.copiar}</button>
+    <button class="btn-icone btn-ouvir" data-a="ouvir" aria-label="Ouvir resposta" title="Ouvir">${ICONE.ouvir}</button>
     ${id ? `<button class="btn-icone${avaliacao === 'like' ? ' on' : ''}" data-a="like" aria-label="Resposta útil" title="Resposta útil">${ICONE.like}</button>
     <button class="btn-icone${avaliacao === 'dislike' ? ' on' : ''}" data-a="dislike" aria-label="Resposta ruim" title="Resposta ruim">${ICONE.dislike}</button>` : ''}`;
   acoes.addEventListener('click', async (ev) => {
     const b = ev.target.closest('button');
     if (!b) return;
+    if (b.dataset.a === 'ouvir') {
+      alternarLeitura(b, aid, texto);
+      return;
+    }
     if (b.dataset.a === 'copiar') {
       if (await copiarTexto(texto)) {
         b.innerHTML = ICONE.ok;
@@ -841,6 +853,59 @@ function finalizarBot(bot, { id, texto, avaliacao, fontes, aid, cid }) {
     }
   });
   bot.conteudo.appendChild(acoes);
+}
+
+/* ------------------------------------------------------------------ ouvir a resposta (texto para voz do Dify) */
+/* Uma leitura por vez: o servidor limpa o texto (tabelas e símbolos não são lidos) e o Dify gera o áudio. */
+let leitura = null;  // { botao, audio, url, ctrl }
+
+/* o botão vai em toda resposta e só aparece quando o agente tem "Texto para voz" (a configuração pode chegar
+   depois do histórico) */
+function atualizarVoz() {
+  $('#mensagens').classList.toggle('com-voz', !!estado.info?.voz?.ativo);
+  if (!estado.info?.voz?.ativo) pararLeitura();
+}
+
+function pararLeitura() {
+  if (!leitura) return;
+  const { botao, audio, url, ctrl } = leitura;
+  leitura = null;
+  ctrl.abort();
+  if (audio) { audio.pause(); audio.removeAttribute('src'); }
+  if (url) URL.revokeObjectURL(url);
+  botao.classList.remove('on', 'carregando');
+  botao.innerHTML = ICONE.ouvir;
+  botao.setAttribute('aria-label', 'Ouvir resposta');
+  botao.title = 'Ouvir';
+}
+
+async function alternarLeitura(botao, aid, texto, automatica = false) {
+  const mesma = leitura?.botao === botao;
+  pararLeitura();
+  if (mesma) return;
+  const atual = { botao, audio: null, url: null, ctrl: new AbortController() };
+  leitura = atual;
+  botao.classList.add('on', 'carregando');
+  botao.innerHTML = '<span class="spinner" aria-hidden="true"></span>';
+  botao.setAttribute('aria-label', 'Parar leitura');
+  botao.title = 'Parar';
+  try {
+    const r = await api(rota('/ouvir', aid), { metodo: 'POST', corpo: { texto }, sinal: atual.ctrl.signal });
+    const blob = await r.blob();
+    if (leitura !== atual) return;
+    atual.url = URL.createObjectURL(blob);
+    atual.audio = new Audio(atual.url);
+    atual.audio.addEventListener('ended', () => { if (leitura === atual) pararLeitura(); });
+    botao.classList.remove('carregando');
+    botao.innerHTML = ICONE.parar;
+    await atual.audio.play();
+  } catch (e) {
+    if (leitura !== atual || e.name === 'AbortError') return;
+    pararLeitura();
+    // o navegador pode bloquear o som automático; aí a pessoa toca no botão
+    if (automatica && e.name === 'NotAllowedError') return;
+    toast(e.message || 'Não foi possível tocar o áudio.', 5000);
+  }
 }
 
 let seguirFim = true;
@@ -1287,6 +1352,10 @@ async function enviarPergunta() {
   }
   if (erro) bot.conteudo.appendChild(erroBox(erro));
   finalizarBot(bot, { id: messageId, texto, fontes, aid: agente.id, cid: conversaId });
+  if (terminou && !erro && texto && mesmaTela() && estado.info?.voz?.automatica) {
+    const b = $('[data-a="ouvir"]', bot.conteudo);
+    if (b) alternarLeitura(b, agente.id, texto, true);
+  }
   // se outra resposta já começou (troca rápida de conversa), não mexe no estado dela
   if (estado.abort === ctrl) {
     estado.taskId = null;

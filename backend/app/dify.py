@@ -136,6 +136,19 @@ async def transcrever(chave: str, username: str, dados: bytes, nome: str, mime: 
     return r.json()
 
 
+async def falar(chave: str, username: str, texto: str) -> tuple[bytes, str]:
+    """Texto para voz com a voz configurada no app do Dify (recurso "Text to Speech" ligado).
+    Devolve (áudio, tipo), em geral audio/mpeg."""
+    async with _client(chave, httpx.Timeout(180, connect=15)) as c:
+        r = await c.post("/text-to-audio", json={"text": texto, "user": ident(username)})
+    if r.status_code >= 400:
+        raise _erro(r)
+    tipo = r.headers.get("content-type", "").split(";")[0].strip().lower()
+    if not tipo.startswith("audio/") or not r.content:
+        raise DifyErro(502, "O Dify não devolveu áudio.")
+    return r.content, tipo
+
+
 async def enviar_arquivo(chave: str, username: str, dados: bytes, nome: str, mime: str) -> dict:
     """Anexo do chat (recurso "Upload de Arquivo" ligado). Devolve o id para mandar junto com a pergunta."""
     async with _client(chave, httpx.Timeout(120, connect=15)) as c:

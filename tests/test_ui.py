@@ -256,6 +256,31 @@ with sync_playwright() as p:
     adm.select_option("#sel-agente", label="Agente Comercial")
     checar("trocar de agente limpa os anexos", lambda: expect(adm.locator("#anexos-fila")).to_be_hidden())
 
+    # ------------------------------------------------------------------ ouvir
+    print("== admin: ouvir a resposta (Texto para voz)")
+    perguntar(adm, "Oi")
+    checar("agente responde", lambda: expect(adm.locator("#btn-parar")).to_be_hidden(timeout=15000))
+    checar("sem botão de ouvir no agente sem o recurso", lambda: expect(adm.locator(".msg-bot .btn-ouvir").last).to_be_hidden())
+    adm.select_option("#sel-agente", label="PU completo")
+    adm.locator(".conversa", has_text="Analise os arquivos").first.click()
+    ouvir = adm.locator(".msg-bot .btn-ouvir").last
+    checar("botão de ouvir nas respostas do histórico", lambda: expect(ouvir).to_be_visible())
+    adm.evaluate("""() => { window.__tocou = 0; const p = HTMLMediaElement.prototype.play;
+        HTMLMediaElement.prototype.play = function () { window.__tocou++; return p.call(this); }; }""")
+    ouvir.click()
+    checar("tocando: vira botão de parar", lambda: expect(ouvir).to_have_attribute("aria-label", "Parar leitura"))
+    try:
+        adm.wait_for_function("() => window.__tocou >= 1", timeout=8000)
+        ok(True, "o áudio toca")
+    except Exception as e:  # noqa: BLE001
+        ok(False, f"o áudio toca -> {str(e)[:120]}")
+    print_(adm, "16-ouvindo")
+    ouvir.click()
+    checar("clicar de novo para a leitura", lambda: expect(ouvir).to_have_attribute("aria-label", "Ouvir resposta"))
+    ouvir.click()
+    checar("tocando de novo", lambda: expect(ouvir).to_have_attribute("aria-label", "Parar leitura"))
+    checar("termina sozinho e volta ao normal", lambda: expect(ouvir).to_have_attribute("aria-label", "Ouvir resposta", timeout=10000))
+
     # ------------------------------------------------------------------ maria
     print("== maria: só o comercial")
     maria = novo()
@@ -579,7 +604,7 @@ with sync_playwright() as p:
     checar("lista de usuários no celular", lambda: expect(cel.locator(".usuario .btn-agentes").first).to_be_visible())
     print_(cel, "09-celular-admin-usuarios")
     cel.click(".aba[data-aba=agentes]")
-    checar("lista de agentes no celular", lambda: expect(cel.locator(".agente-linha")).to_have_count(2))
+    checar("lista de agentes no celular", lambda: expect(cel.locator(".agente-linha:not(.base-linha)")).to_have_count(2))
     print_(cel, "10-celular-admin-agentes")
     cel.click(".aba[data-aba=conversas]")
     checar("conversas no celular", lambda: expect(cel.locator(".conv-linha").first).to_be_visible())
