@@ -38,6 +38,10 @@ class Settings:
     # Tamanho máximo do áudio enviado para transcrição (o Dify aceita até 30 MB).
     # O navegador grava em WAV 16 kHz mono: ~1,9 MB por minuto, e limita a gravação a 5 min (~9,6 MB).
     AUDIO_MAX_MB = int(os.getenv("AUDIO_MAX_MB", "12"))
+    # Anexos no chat (recurso "Upload de Arquivo" do app no Dify): tamanho máximo e envios por pessoa por hora.
+    # Vale o menor entre este limite e o do Dify (15 MB para documentos e 10 MB para imagens, por padrão).
+    ANEXO_MAX_MB = int(os.getenv("ANEXO_MAX_MB", "15"))
+    ANEXOS_POR_HORA = int(os.getenv("ANEXOS_POR_HORA", "60"))
 
     # Envio de conhecimento com aprovação
     # Chave de API de Conhecimento do Dify (ds-...): cria as bases colaborativas e envia/apaga documentos

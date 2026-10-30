@@ -12,6 +12,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Envio de conhecimento com aprovação**: o usuário envia um arquivo (PDF, Office, apresentações, planilhas, imagens) para um agente aprender. O arquivo passa por leitura máxima (conversão para PDF e OCR), fica em quarentena **nesta plataforma** (nada chega ao Dify antes de aprovado), recebe alertas automáticos (instruções suspeitas, dados pessoais, pouco texto) e só entra na base do agente depois da aprovação de um aprovador daquele agente. Só administradores desativam ou excluem um conhecimento aprovado.
 - **Avaliações viram treinamento**: nos agentes que recebem conhecimento, cada 👍 manda a resposta para aprovação como "resposta validada", e cada 👎 manda para aprovação como "correção". No 👎, a pessoa pode escrever a resposta certa (opcional); se não escrever, o aprovador escreve ao aprovar. Só a resposta correta entra na base do agente.
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
+- **Anexos no chat**: nos agentes com "Upload de Arquivo" ligado no Dify, o clipe anexa imagens e documentos (ou um print colado) para o agente analisar naquela pergunta. O arquivo vai direto para o Dify e não fica guardado aqui.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -270,6 +271,43 @@ Agentes sem o recurso ligado não mostram o microfone. Se o modelo de voz para t
 - O servidor confere se a pessoa tem acesso ao agente e se o arquivo está dentro do limite (`AUDIO_MAX_MB`, padrão 12 MB), repassa para `/v1/audio-to-text` do Dify com a chave do agente e devolve só o texto. **O áudio não fica guardado** em lugar nenhum desta aplicação.
 - A gravação só funciona com **HTTPS** (exigência dos navegadores para usar o microfone).
 - O nginx precisa aceitar o tamanho do áudio: `client_max_body_size 12m` (já está em `deploy/nginx-agente.conf`). Com o limite antigo de 1 MB, áudios com mais de uns 30 segundos são recusados e a pessoa vê *"O servidor recusou o áudio por tamanho"*.
+
+## Anexos no chat
+
+O botão de clipe (📎), à esquerda da caixa de pergunta, aparece **só nos agentes com o recurso "Upload de Arquivo" ligado no Dify**. Com ele, a pessoa anexa arquivos para o agente analisar **naquela pergunta**: por exemplo, uma ficha técnica, um laudo, uma planilha ou a foto de um defeito.
+
+Não confunda com o [envio de conhecimento](#envio-de-conhecimento-com-aprovação): o anexo **não passa por aprovação e não entra em nenhuma base**. Ele vale só para a pergunta em que foi enviado.
+
+### Como usar
+
+1. Clique no clipe e escolha até 3 arquivos (o limite vem do Dify). Também dá para **arrastar** arquivos para a caixa ou **colar um print** (Ctrl+V).
+2. Cada arquivo sobe na hora e aparece acima da caixa. Se o arquivo for recusado, ele fica marcado em vermelho com o motivo; tire-o no **×**.
+3. Escreva a pergunta e envie. Sem texto, vai *"Analise o arquivo anexado."*.
+4. Os nomes dos anexos ficam na pergunta, também ao reabrir a conversa, na tela de conversas da administração e no TXT exportado.
+
+Tipos aceitos: **imagens** (PNG, JPG, WEBP, GIF) e **documentos** (PDF, Word, Excel, PowerPoint, CSV, TXT, MD). Áudio, vídeo, HTML e SVG ficam de fora, mesmo que o app do Dify aceite. Na prática vale o que estiver ligado nos dois lados: se o app aceita só imagens, só imagens aparecem.
+
+### Como ligar num agente (no Dify)
+
+1. Abra o app → **Recursos** → ligue **Upload de Arquivo**. Marque **Imagem** e/ou **Documento** e deixe **Upload local** permitido.
+2. **O fluxo precisa usar o arquivo.** Só ligar o recurso não basta, porque o arquivo chega no fluxo como `sys.files`:
+   - **Documentos:** em Chatflow, ponha um nó **Extrator de documentos** lendo `sys.files` e leve o texto dele para o agente/LLM (na instrução ou na pergunta). Sem esse nó, o documento é ignorado.
+   - **Imagens:** o modelo precisa aceitar imagem, e a opção **Visão** tem que estar ligada no nó do agente/LLM, apontando para `sys.files`.
+3. **Publique.** Em até 5 minutos, o clipe aparece para quem tem acesso ao agente (recarregue a página para ver na hora).
+
+### Como funciona por dentro
+
+- O servidor confere se a pessoa tem acesso ao agente, se o tipo é aceito, se o conteúdo bate com a extensão (o mesmo controle do envio de conhecimento: recusa executável disfarçado, macros e bomba de compressão) e o tamanho. O tamanho vale o menor entre `ANEXO_MAX_MB` e o limite do Dify (padrão: 15 MB para documento, 10 MB para imagem).
+- O arquivo vai direto para `/v1/files/upload` do Dify com a chave do agente e **não fica guardado nesta aplicação**. A pergunta leva só o id devolvido pelo Dify.
+- Só quem anexou pode usar o id, e só no mesmo agente, por até 24 horas. Ids de outra pessoa ou de outro agente são recusados.
+- O link do arquivo no Dify nunca vai para o navegador; o histórico mostra só o nome.
+- Limite de `ANEXOS_POR_HORA` (padrão 60) anexos por pessoa por hora.
+- O registro de uso da pergunta mostra quantos e quais arquivos foram anexados.
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `ANEXO_MAX_MB` | `15` | Tamanho máximo do anexo (vale o menor entre este e o limite do Dify). Acima de 15, aumente também `client_max_body_size` no nginx. |
+| `ANEXOS_POR_HORA` | `60` | Anexos por pessoa por hora. |
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

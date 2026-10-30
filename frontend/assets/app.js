@@ -452,6 +452,7 @@ function aplicarAgenteNaTela() {
 
 function selecionarAgente(a, { manterConversa = false } = {}) {
   cancelarGravacao();  // o áudio seria transcrito pelo agente anterior
+  limparAnexos();      // o anexo foi enviado ao app do Dify do agente anterior
   estado.agenteAtual = a;
   estado.info = null;
   estado.conversas = [];
@@ -530,6 +531,7 @@ async function carregarInfo() {
   if (estado.agenteAtual?.id !== a.id) return;  // trocou de agente enquanto carregava
   estado.info = info;
   desenharAbertura();
+  atualizarBotaoAnexo();
 }
 
 function desenharAbertura() {
@@ -726,7 +728,7 @@ async function abrirConversa(id, primeiroId = null) {
       frag.appendChild(b);
     }
     for (const m of itens) {
-      frag.appendChild(bolhaUsuario(m.pergunta));
+      frag.appendChild(bolhaUsuario(m.pergunta, m.anexos || []));
       const bot = bolhaBot();
       renderMarkdown(bot.md, m.resposta);
       finalizarBot(bot, { id: m.id, texto: m.resposta, avaliacao: m.avaliacao, fontes: m.fontes, aid: a.id, cid: id });
@@ -755,14 +757,29 @@ async function abrirConversa(id, primeiroId = null) {
 /* ------------------------------------------------------------------ mensagens */
 let boasVindas;
 
-function bolhaUsuario(texto) {
+function bolhaUsuario(texto, anexos = []) {
   const d = document.createElement('div');
   d.className = 'msg msg-user';
+  if (anexos.length) {
+    const l = document.createElement('div');
+    l.className = 'anexos-msg';
+    for (const a of anexos) l.appendChild(chipAnexo(a));
+    d.appendChild(l);
+  }
   const b = document.createElement('div');
   b.className = 'bolha';
   b.textContent = texto;
   d.appendChild(b);
   return d;
+}
+
+function chipAnexo(a) {
+  const c = document.createElement('span');
+  c.className = 'chip-anexo';
+  c.innerHTML = `<span class="chip-ico" aria-hidden="true">${a.tipo === 'imagem' ? '🖼️' : '📄'}</span><span class="chip-nome"></span>`;
+  $('.chip-nome', c).textContent = a.nome;
+  c.title = a.nome;
+  return c;
 }
 
 function bolhaBot() {
@@ -832,6 +849,106 @@ function rolarFim(forcar = false) {
   if (forcar || seguirFim) box.scrollTop = box.scrollHeight;
 }
 
+/* ------------------------------------------------------------------ anexos (recurso "Upload de Arquivo" do Dify) */
+/* Cada arquivo sobe assim que é escolhido (vai direto para o Dify) e entra na próxima pergunta. */
+let anexos = [];  // { nome, tipo, id, situacao: 'enviando'|'ok'|'erro', erro, ctrl, aid }
+
+function cfgAnexos() {
+  return estado.info?.anexos?.ativo ? estado.info.anexos : null;
+}
+
+function atualizarBotaoAnexo() {
+  const cfg = cfgAnexos();
+  $('#btn-anexar').hidden = !cfg || !estado.agenteAtual || !!gravacao;
+  $('#btn-anexar').disabled = estado.gerando || (cfg && anexos.length >= cfg.max);
+  if (cfg) $('#anexo-input').accept = cfg.extensoes.map((e) => `.${e}`).join(',');
+}
+
+function desenharAnexos() {
+  const fila = $('#anexos-fila');
+  fila.innerHTML = '';
+  fila.hidden = !anexos.length;
+  for (const a of anexos) {
+    const c = chipAnexo(a);
+    c.classList.add(a.situacao);
+    if (a.situacao === 'enviando') c.insertAdjacentHTML('afterbegin', '<span class="spinner" aria-hidden="true"></span>');
+    if (a.situacao === 'erro') {
+      c.title = a.erro;
+      c.insertAdjacentHTML('beforeend', `<span class="chip-erro"></span>`);
+      $('.chip-erro', c).textContent = a.erro;
+    }
+    const x = document.createElement('button');
+    x.type = 'button';
+    x.className = 'chip-tirar';
+    x.setAttribute('aria-label', `Tirar ${a.nome}`);
+    x.title = 'Tirar';
+    x.textContent = '×';
+    x.addEventListener('click', () => tirarAnexo(a));
+    c.appendChild(x);
+    fila.appendChild(c);
+  }
+  atualizarBotaoAnexo();
+  atualizarBotaoEnviar();
+}
+
+function tirarAnexo(a) {
+  a.ctrl?.abort();
+  anexos = anexos.filter((x) => x !== a);
+  desenharAnexos();
+}
+
+function limparAnexos() {
+  for (const a of anexos) a.ctrl?.abort();
+  anexos = [];
+  desenharAnexos();
+}
+
+function adicionarAnexos(arquivos) {
+  const cfg = cfgAnexos();
+  const agente = estado.agenteAtual;
+  if (!cfg || !agente) return;
+  for (const f of arquivos) {
+    if (anexos.length >= cfg.max) {
+      toast(`Este agente aceita até ${cfg.max} anexo${cfg.max === 1 ? '' : 's'} por pergunta.`, 5000);
+      break;
+    }
+    const ext = (f.name.includes('.') ? f.name.split('.').pop() : '').toLowerCase();
+    if (!cfg.extensoes.includes(ext)) {
+      toast(`Arquivo .${ext || '?'} não aceito. Aceitos: ${cfg.extensoes.map((e) => `.${e}`).join(', ')}.`, 6000);
+      continue;
+    }
+    const imagem = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
+    const mb = imagem ? cfg.max_mb_imagem : cfg.max_mb;
+    if (f.size > mb * 1024 * 1024) {
+      toast(`"${f.name}" passou de ${mb} MB.`, 5000);
+      continue;
+    }
+    if (!f.size) {
+      toast(`"${f.name}" está vazio.`);
+      continue;
+    }
+    const a = { nome: f.name, tipo: imagem ? 'imagem' : 'documento', id: null, situacao: 'enviando', ctrl: new AbortController(), aid: agente.id };
+    anexos.push(a);
+    enviarAnexo(a, f);
+  }
+  desenharAnexos();
+}
+
+async function enviarAnexo(a, arquivo) {
+  try {
+    const r = await (await api(rota('/arquivos', a.aid), {
+      metodo: 'POST', bruto: new Blob([arquivo], { type: 'application/octet-stream' }), sinal: a.ctrl.signal,
+      cabecalhos: { 'X-Arquivo-Nome': encodeURIComponent(arquivo.name) },
+    })).json();
+    Object.assign(a, { id: r.id, nome: r.nome, tipo: r.tipo, situacao: 'ok' });
+  } catch (e) {
+    if (e.name === 'AbortError') return;
+    Object.assign(a, { situacao: 'erro', erro: e.message });
+  }
+  a.ctrl = null;
+  if (anexos.includes(a)) desenharAnexos();
+}
+
 /* ------------------------------------------------------------------ áudio (voz para texto) */
 /* Grava no navegador, converte para WAV 16 kHz mono (o Dify não aceita o webm que o Chrome grava),
    manda para o servidor transcrever com o modelo do agente e põe o texto na caixa para a pessoa revisar. */
@@ -848,6 +965,7 @@ function atualizarBotaoAudio() {
   const pode = audioSuportado() && !!estado.agenteAtual && !!estado.info?.audio;
   $('#btn-microfone').hidden = !pode || !!gravacao;
   $('#btn-microfone').disabled = estado.gerando;
+  atualizarBotaoAnexo();
 }
 
 function tempoGravacao(seg) {
@@ -1008,7 +1126,14 @@ function ajustarAltura() {
   ta.style.height = 'auto';
   // vazio ou ainda oculto: deixa a altura natural (rows=1) para não cortar o placeholder
   if (ta.value && ta.scrollHeight) ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`;
-  $('#btn-enviar').disabled = !ta.value.trim() || estado.gerando || !estado.agenteAtual;
+  atualizarBotaoEnviar();
+}
+
+function atualizarBotaoEnviar() {
+  // com anexo pronto dá para enviar sem texto (vai uma pergunta padrão); anexo subindo segura o envio
+  const temAnexo = anexos.some((a) => a.situacao === 'ok');
+  $('#btn-enviar').disabled = (!$('#pergunta').value.trim() && !temAnexo) || estado.gerando || !estado.agenteAtual
+    || anexos.some((a) => a.situacao === 'enviando');
 }
 
 function modoGerando(sim) {
@@ -1035,16 +1160,22 @@ async function pararGeracao(silencioso = false) {
 
 async function enviarPergunta() {
   const ta = $('#pergunta');
-  const pergunta = ta.value.trim();
   const agente = estado.agenteAtual;
-  if (!pergunta || estado.gerando || !agente) return;
+  if (estado.gerando || !agente) return;
+  if (anexos.some((a) => a.situacao === 'enviando')) { toast('Aguarde o anexo terminar de enviar.'); return; }
+  if (anexos.some((a) => a.situacao === 'erro')) { toast('Tire o anexo com erro antes de enviar.'); return; }
+  const enviados = anexos.filter((a) => a.situacao === 'ok' && a.aid === agente.id);
+  const pergunta = ta.value.trim() || (enviados.length ? `Analise ${enviados.length > 1 ? 'os arquivos anexados' : 'o arquivo anexado'}.` : '');
+  if (!pergunta) return;
+  anexos = [];
+  desenharAnexos();
   ta.value = '';
   ajustarAltura();
   if (ehMobile()) ta.blur();
 
   const box = $('#mensagens');
   if (boasVindas.isConnected) boasVindas.remove();
-  box.appendChild(bolhaUsuario(pergunta));
+  box.appendChild(bolhaUsuario(pergunta, enviados));
   const bot = bolhaBot();
   const status = document.createElement('div');
   status.className = 'status';
@@ -1090,7 +1221,7 @@ async function enviarPergunta() {
   };
 
   try {
-    const r = await api(rota('/chat', agente.id), { metodo: 'POST', corpo: { pergunta, conversation_id: conversaEnviada }, sinal: ctrl.signal });
+    const r = await api(rota('/chat', agente.id), { metodo: 'POST', corpo: { pergunta, conversation_id: conversaEnviada, arquivos: enviados.map((a) => a.id) }, sinal: ctrl.signal });
     const leitor = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -1786,7 +1917,7 @@ async function abrirConversaAdmin(c) {
     if (conversaAberta !== c) return;
     box.innerHTML = mensagens.length ? '' : '<p class="muted">Conversa sem mensagens.</p>';
     for (const m of mensagens) {
-      const u = bolhaUsuario(m.pergunta);
+      const u = bolhaUsuario(m.pergunta, m.anexos || []);
       u.insertAdjacentHTML('afterbegin', `<span class="conv-hora">${esc(dataHora(m.criado))}</span>`);
       box.appendChild(u);
       const bot = bolhaBot();
@@ -2632,6 +2763,32 @@ function ligarEventos() {
   $('#form-chat').addEventListener('submit', (e) => { e.preventDefault(); enviarPergunta(); });
   $('#btn-parar').addEventListener('click', () => pararGeracao());
   $('#btn-microfone').addEventListener('click', iniciarGravacao);
+  $('#btn-anexar').addEventListener('click', () => $('#anexo-input').click());
+  $('#anexo-input').addEventListener('change', (e) => {
+    adicionarAnexos([...e.target.files]);
+    e.target.value = '';
+  });
+  // colar um print (Ctrl+V) ou arrastar arquivos para a caixa também anexa
+  ta.addEventListener('paste', (e) => {
+    const arquivos = [...(e.clipboardData?.files || [])];
+    if (!arquivos.length || !cfgAnexos()) return;
+    e.preventDefault();
+    adicionarAnexos(arquivos.map((f, i) => (f.name && f.name !== 'image.png' ? f
+      : new File([f], `print-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}${i ? `-${i}` : ''}.${(f.type.split('/')[1] || 'png').replace('jpeg', 'jpg')}`, { type: f.type }))));
+  });
+  const caixa = $('#compositor-caixa');
+  caixa.addEventListener('dragover', (e) => {
+    if (!cfgAnexos() || !e.dataTransfer?.types?.includes('Files')) return;
+    e.preventDefault();
+    caixa.classList.add('arrastando');
+  });
+  caixa.addEventListener('dragleave', () => caixa.classList.remove('arrastando'));
+  caixa.addEventListener('drop', (e) => {
+    caixa.classList.remove('arrastando');
+    if (!cfgAnexos() || !e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    adicionarAnexos([...e.dataTransfer.files]);
+  });
   $('#btn-concluir').addEventListener('click', concluirGravacao);
   $('#grav-cancelar').addEventListener('click', cancelarGravacao);
   $('#mensagens').addEventListener('scroll', () => {

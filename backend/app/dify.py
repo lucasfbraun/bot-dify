@@ -136,12 +136,26 @@ async def transcrever(chave: str, username: str, dados: bytes, nome: str, mime: 
     return r.json()
 
 
-async def stream_chat(chave: str, username: str, pergunta: str, conversation_id: str | None):
-    """Repassa o streaming (SSE) do Dify linha a linha, já como eventos JSON."""
+async def enviar_arquivo(chave: str, username: str, dados: bytes, nome: str, mime: str) -> dict:
+    """Anexo do chat (recurso "Upload de Arquivo" ligado). Devolve o id para mandar junto com a pergunta."""
+    async with _client(chave, httpx.Timeout(120, connect=15)) as c:
+        r = await c.post("/files/upload", files={"file": (nome, dados, mime)}, data={"user": ident(username)})
+    if r.status_code >= 400:
+        raise _erro(r)
+    return r.json()
+
+
+async def stream_chat(chave: str, username: str, pergunta: str, conversation_id: str | None,
+                      arquivos: list[dict] | None = None):
+    """Repassa o streaming (SSE) do Dify linha a linha, já como eventos JSON.
+    arquivos: [{"tipo": "image"|"document", "id": <id do /files/upload>}]"""
     body = {"inputs": {}, "query": pergunta, "response_mode": "streaming", "user": ident(username),
             "auto_generate_name": True}
     if conversation_id:
         body["conversation_id"] = conversation_id
+    if arquivos:
+        body["files"] = [{"type": a["tipo"], "transfer_method": "local_file", "upload_file_id": a["id"]}
+                         for a in arquivos]
     timeout = httpx.Timeout(settings.DIFY_TIMEOUT, connect=15)
     async with _client(chave, timeout) as c:
         async with c.stream("POST", "/chat-messages", json=body) as r:

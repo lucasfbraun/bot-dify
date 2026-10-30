@@ -11,6 +11,8 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
+import zipfile
+
 import httpx
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -31,10 +33,10 @@ def secao(titulo):
     print(f"\n== {titulo}")
 
 
-def conversar(cliente, aid, pergunta, cid=None):
+def conversar(cliente, aid, pergunta, cid=None, arquivos=None):
     eventos = []
-    with cliente.stream("POST", f"/api/agentes/{aid}/chat", json={"pergunta": pergunta, "conversation_id": cid},
-                        timeout=30) as s:
+    corpo = {"pergunta": pergunta, "conversation_id": cid, **({"arquivos": arquivos} if arquivos is not None else {})}
+    with cliente.stream("POST", f"/api/agentes/{aid}/chat", json=corpo, timeout=30) as s:
         if s.status_code != 200:
             return s.status_code, []
         for linha in s.iter_lines():
@@ -190,6 +192,68 @@ ok(httpx.post(f"{B}/api/agentes/{PU}/audio", content=wav(), headers=AUDIO, cooki
    "envio de áudio sem cabeçalho CSRF -> 403")
 ok(anon.post(f"/api/agentes/{PU}/audio", content=wav(), headers={**AUDIO, **H}).status_code == 401, "sem sessão -> 401")
 ok("microphone=(self)" in anon.get("/").headers["permissions-policy"], "Permissions-Policy libera o microfone só para o site")
+
+# ------------------------------------------------------------------ anexos no chat
+secao("anexos no chat (Upload de Arquivo)")
+FAKE_URL = f"http://127.0.0.1:{os.getenv('DIFY_PORT', '8099')}"
+PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 200
+PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+
+
+def anexar(cliente, aid, nome, dados):
+    return cliente.post(f"/api/agentes/{aid}/arquivos", content=dados,
+                        headers={"Content-Type": "application/octet-stream", "X-Arquivo-Nome": quote(nome)})
+
+
+cfg = adm.get(f"/api/agentes/{PU}/info").json()["anexos"]
+ok(cfg["ativo"] is True and cfg["max"] == 3 and "pdf" in cfg["extensoes"] and "png" in cfg["extensoes"]
+   and not {"mp3", "mp4", "svg", "html"} & set(cfg["extensoes"]), f"PU com Upload de Arquivo: só imagem e documento ({cfg})")
+ok(cfg["max_mb"] == 15 and cfg["max_mb_imagem"] == 10, "limites de tamanho vêm do Dify (15 MB doc, 10 MB imagem)")
+ok(maria.get(f"/api/agentes/{COM}/info").json()["anexos"]["ativo"] is False, "comercial sem Upload de Arquivo: sem anexos")
+r = anexar(maria, COM, "a.pdf", PDF)
+ok(r.status_code == 400 and "Upload de Arquivo" in r.json()["detail"], "agente sem o recurso -> 400 explicando o que ligar")
+ok(anexar(maria, PU, "a.pdf", PDF).status_code == 403, "agente não liberado -> 403")
+r = anexar(adm, PU, "Ficha técnica ç.pdf", PDF)
+a_pdf = r.json()
+ok(r.status_code == 200 and a_pdf["nome"] == "Ficha técnica ç.pdf" and a_pdf["tipo"] == "documento", "anexa PDF (nome com acento)")
+a_png = anexar(adm, PU, "print.png", PNG).json()
+ok(a_png.get("tipo") == "imagem", "anexa imagem")
+ok(anexar(adm, PU, "musica.mp3", b"ID3" + b"\0" * 100).status_code == 415, "áudio não é aceito -> 415")
+ok(anexar(adm, PU, "pagina.html", b"<html></html>").status_code == 415, "HTML não é aceito -> 415")
+ok(anexar(adm, PU, "falso.pdf", b"MZ\x90\0 executavel").status_code == 415, "conteúdo que não bate com a extensão -> 415")
+macro = io.BytesIO()
+with zipfile.ZipFile(macro, "w") as z:
+    z.writestr("word/document.xml", "<w/>")
+    z.writestr("word/vbaProject.bin", "x")
+r = anexar(adm, PU, "macro.docx", macro.getvalue())
+ok(r.status_code == 415 and "macros" in r.json()["detail"], "documento com macro -> 415")
+ok(anexar(adm, PU, "vazio.pdf", b"").status_code == 400, "arquivo vazio -> 400")
+r = anexar(adm, PU, "grande.png", b"\x89PNG\r\n\x1a\n" + b"\0" * (10 * 1024 * 1024 + 10))
+ok(r.status_code == 413 and "10 MB" in r.json()["detail"], "imagem acima do limite do Dify -> 413")
+ok(httpx.post(f"{B}/api/agentes/{PU}/arquivos", content=PDF, cookies=adm.cookies,
+              headers={"X-Arquivo-Nome": "a.pdf"}).status_code == 403, "anexo sem cabeçalho CSRF -> 403")
+
+code, eventos = conversar(adm, PU, "O que diz esta ficha?", arquivos=[a_pdf["id"], a_png["id"]])
+ok(code == 200 and "fim" in [e["t"] for e in eventos], "pergunta com dois anexos")
+ult = httpx.get(f"{FAKE_URL}/teste/ultimo-chat").json()
+ok(ult.get("files") == [{"type": "document", "transfer_method": "local_file", "upload_file_id": a_pdf["id"]},
+                        {"type": "image", "transfer_method": "local_file", "upload_file_id": a_png["id"]}],
+   "os anexos vão para o Dify com o tipo certo")
+cid_anexo = eventos[0]["conversation_id"]
+msgs = adm.get(f"/api/agentes/{PU}/conversas/{cid_anexo}/mensagens").json()["itens"]
+ok(msgs[-1]["anexos"] == [{"nome": "Ficha técnica ç.pdf", "tipo": "documento"}, {"nome": "print.png", "tipo": "imagem"}],
+   "histórico mostra os nomes dos anexos (sem o link do Dify)")
+code, _ = conversar(adm, PU, "sem anexo")
+ok(code == 200 and "files" not in httpx.get(f"{FAKE_URL}/teste/ultimo-chat").json(), "pergunta sem anexo não manda files")
+ok(conversar(adm, PU, "id inventado", arquivos=["00000000-0000-0000-0000-000000000000"])[0] == 400, "id de anexo desconhecido -> 400")
+ok(conversar(adm, PU, "id inválido", arquivos=["../../x"])[0] == 400, "id de anexo inválido -> 400")
+ok(conversar(adm, COM, "anexo de outro agente", arquivos=[a_pdf["id"]])[0] == 400, "anexo de outro agente -> 400")
+extras = [anexar(adm, PU, f"f{i}.pdf", PDF).json()["id"] for i in range(4)]
+r = conversar(adm, PU, "muitos", arquivos=extras)
+ok(r[0] == 400, "mais anexos do que o agente aceita -> 400")
+ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM]}).status_code == 200, "(libera o PU para maria)")
+ok(conversar(maria, PU, "anexo do admin", arquivos=[a_pdf["id"]])[0] == 400, "anexo de outra pessoa não pode ser usado -> 400")
+ok(adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [COM]}).status_code == 200, "(revoga de novo)")
 
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")
@@ -366,7 +430,6 @@ ok(httpx.post(f"{B}/api/admin/conversas/exportar", json={"filtro": {}}, cookies=
 # ------------------------------------------------------------------ envio de conhecimento com aprovação
 secao("conhecimento: configuração (chave na tela e base colaborativa do agente)")
 import time as _t  # noqa: E402
-import zipfile  # noqa: E402
 
 from fake_dify import CHAVE_CONHECIMENTO, CHAVE_CONHECIMENTO_RESTRITA  # noqa: E402
 

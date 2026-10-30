@@ -248,9 +248,52 @@ def meus_agentes(user: dict = Depends(usuario_atual)):
 
 _cache_params: dict[int, dict] = {}
 
+# Anexos no chat: só imagem e documento (áudio e vídeo ficam de fora mesmo se o app do Dify aceitar)
+TIPOS_ANEXO = {
+    "pdf": ("document", "application/pdf"),
+    "docx": ("document", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    "doc": ("document", "application/msword"),
+    "xlsx": ("document", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+    "xls": ("document", "application/vnd.ms-excel"),
+    "pptx": ("document", "application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+    "ppt": ("document", "application/vnd.ms-powerpoint"),
+    "csv": ("document", "text/csv"),
+    "txt": ("document", "text/plain"),
+    "md": ("document", "text/markdown"),
+    "png": ("image", "image/png"),
+    "jpg": ("image", "image/jpeg"),
+    "jpeg": ("image", "image/jpeg"),
+    "webp": ("image", "image/webp"),
+    "gif": ("image", "image/gif"),
+}
 
-@app.get("/api/agentes/{aid}/info")
-async def agente_info(ag: dict = Depends(agente_permitido)):
+
+def _anexos_do_app(p: dict) -> dict:
+    """Lê o recurso "Upload de Arquivo" do app (formato novo do Dify e o antigo, só de imagens)."""
+    fu = p.get("file_upload") or {}
+    sistema = p.get("system_parameters") or {}
+    if fu.get("enabled"):
+        tipos = set(fu.get("allowed_file_types") or [])
+        extensoes = {str(e).lower().lstrip(".") for e in (fu.get("allowed_file_extensions") or [])}
+        metodos = fu.get("allowed_file_upload_methods") or ["local_file"]
+        maximo = fu.get("number_limits") or 3
+    elif (fu.get("image") or {}).get("enabled"):
+        tipos, extensoes = {"image"}, set()
+        metodos = fu["image"].get("transfer_methods") or ["local_file"]
+        maximo = fu["image"].get("number_limits") or 3
+    else:
+        return {"ativo": False, "extensoes": [], "max": 0, "max_mb": 0, "max_mb_imagem": 0}
+    aceitas = sorted(e for e, (t, _) in TIPOS_ANEXO.items()
+                     if t in tipos or ("custom" in tipos and e in extensoes))
+    mb_doc = min(settings.ANEXO_MAX_MB, int(sistema.get("file_size_limit") or 15))
+    mb_img = min(settings.ANEXO_MAX_MB, int(sistema.get("image_file_size_limit") or 10))
+    ativo = bool(aceitas) and "local_file" in metodos
+    return {"ativo": ativo, "extensoes": aceitas if ativo else [], "max": int(maximo) if ativo else 0,
+            "max_mb": mb_doc, "max_mb_imagem": mb_img}
+
+
+async def _params_agente(ag: dict) -> dict:
+    """Configuração do app no Dify (abertura, sugestões, voz, anexos), guardada por 5 minutos."""
     cache = _cache_params.get(ag["id"])
     if not cache or cache["chave"] != ag["chave"] or time.time() - cache["t"] > 300:
         try:
@@ -261,12 +304,20 @@ async def agente_info(ag: dict = Depends(agente_permitido)):
                 "sugestoes_apos_resposta": bool((p.get("suggested_questions_after_answer") or {}).get("enabled")),
                 # recurso "Voz para texto" ligado no app: mostra o botão de microfone
                 "audio": bool((p.get("speech_to_text") or {}).get("enabled")),
+                # recurso "Upload de Arquivo" ligado no app: mostra o botão de anexar
+                "anexos": _anexos_do_app(p),
             }}
             _cache_params[ag["id"]] = cache
         except Exception as e:  # noqa: BLE001
             log.warning("parâmetros do Dify indisponíveis (agente %s): %s", ag["id"], e)
-            cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False, "audio": False}}
-    v = dict(cache["v"])
+            cache = {"v": {"abertura": "", "sugestoes": [], "sugestoes_apos_resposta": False, "audio": False,
+                           "anexos": _anexos_do_app({})}}
+    return cache["v"]
+
+
+@app.get("/api/agentes/{aid}/info")
+async def agente_info(ag: dict = Depends(agente_permitido)):
+    v = dict(await _params_agente(ag))
     # perguntas sugeridas do Dify têm prioridade; sem elas, usa as cadastradas no agente
     if not v["sugestoes"]:
         v["sugestoes"] = ag["sugestoes"]
@@ -295,6 +346,18 @@ def _fontes(meta: dict | None) -> list[dict]:
     return out
 
 
+def _anexos_msg(m: dict) -> list[dict]:
+    """Nomes dos arquivos que a pessoa anexou na pergunta (o link do Dify não vai para o navegador)."""
+    out = []
+    for f in m.get("message_files") or []:
+        if f.get("belongs_to", "user") != "user":
+            continue
+        tipo = "imagem" if f.get("type") == "image" else "documento"
+        out.append({"nome": str(f.get("filename") or ("Imagem" if tipo == "imagem" else "Documento"))[:150],
+                    "tipo": tipo})
+    return out
+
+
 @app.get("/api/agentes/{aid}/conversas/{cid}/mensagens")
 async def listar_mensagens(cid: str, first_id: str | None = None, ag: dict = Depends(agente_permitido),
                            user: dict = Depends(usuario_atual)):
@@ -309,6 +372,7 @@ async def listar_mensagens(cid: str, first_id: str | None = None, ag: dict = Dep
             "criado": m.get("created_at"),
             "avaliacao": (m.get("feedback") or {}).get("rating"),
             "fontes": _fontes({"retriever_resources": m.get("retriever_resources")}),
+            "anexos": _anexos_msg(m),
         })
     return {"itens": itens, "mais": r.get("has_more", False)}
 
@@ -374,6 +438,7 @@ async def parar(task_id: str, ag: dict = Depends(agente_permitido), user: dict =
 class ChatIn(BaseModel):
     pergunta: str = Field(min_length=1, max_length=8000)
     conversation_id: str | None = None
+    arquivos: list[str] = Field(default_factory=list, max_length=10)  # ids devolvidos por /arquivos
 
 
 # formatos que o Dify transcreve (o frontend sempre manda WAV; os outros servem para clientes futuros)
@@ -435,6 +500,88 @@ async def transcrever_audio(request: Request, ag: dict = Depends(agente_permitid
     return {"texto": texto}
 
 
+# Anexos enviados ao Dify nas últimas 24 h: id -> dono, agente, tipo e nome.
+# Só quem enviou pode usar o id na pergunta (1 worker: cabe em memória; se reiniciar, é só anexar de novo).
+_anexos: dict[str, dict] = {}
+_ERROS_ANEXO = {
+    "file_too_large": (413, "O arquivo é maior do que o Dify aceita."),
+    "unsupported_file_type": (415, "O Dify não aceita esse tipo de arquivo neste agente."),
+    "file_extension_blocked": (415, "O Dify não aceita esse tipo de arquivo neste agente."),
+}
+
+
+def _limpar_anexos() -> None:
+    limite = time.time() - 86400
+    for k in [k for k, v in _anexos.items() if v["t"] < limite]:
+        _anexos.pop(k, None)
+
+
+@app.post("/api/agentes/{aid}/arquivos")
+async def anexar_arquivo(request: Request, ag: dict = Depends(agente_permitido), user: dict = Depends(usuario_atual)):
+    """Recebe o arquivo (corpo bruto; nome no cabeçalho X-Arquivo-Nome), confere e manda ao Dify.
+    Não fica guardado aqui: o Dify o entrega ao agente junto com a pergunta."""
+    cfg = (await _params_agente(ag))["anexos"]
+    if not cfg["ativo"]:
+        raise HTTPException(400, "Este agente não está configurado para receber anexos. No Dify, ligue o recurso "
+                                 "\"Upload de Arquivo\" do app (imagens e/ou documentos) e publique.")
+    nome = conhecimento.nome_seguro(request.headers.get("x-arquivo-nome", ""))
+    if not nome:
+        raise HTTPException(400, "Nome de arquivo inválido.")
+    ext = nome.rsplit(".", 1)[1]
+    if ext not in cfg["extensoes"]:
+        raise HTTPException(415, f"Este agente não aceita arquivos .{ext}. Aceita: "
+                                 + ", ".join(f".{e}" for e in cfg["extensoes"]) + ".")
+    _limpar_anexos()
+    hora_atras = time.time() - 3600
+    if sum(1 for v in _anexos.values() if v["username"] == user["username"] and v["t"] > hora_atras) >= settings.ANEXOS_POR_HORA:
+        raise HTTPException(429, "Muitos anexos na última hora. Tente mais tarde.")
+    tipo, mime = TIPOS_ANEXO[ext]
+    mb = cfg["max_mb_imagem"] if tipo == "image" else cfg["max_mb"]
+    limite = mb * 1024 * 1024
+    grande = HTTPException(413, f"O arquivo passou de {mb} MB.")
+    try:
+        declarado = int(request.headers.get("content-length") or 0)
+    except ValueError:
+        declarado = 0
+    if declarado > limite:
+        raise grande
+    dados = bytearray()
+    async for parte in request.stream():
+        dados += parte
+        if len(dados) > limite:
+            raise grande
+    dados = bytes(dados)
+    if not dados:
+        raise HTTPException(400, "Arquivo vazio.")
+    conhecimento.validar_conteudo(dados, ext)  # conteúdo bate com a extensão; recusa macros e bombas de compressão
+    try:
+        r = await dify.enviar_arquivo(ag["chave"], user["username"], dados, nome, mime)
+    except dify.DifyErro as e:
+        log.warning("Dify files/upload %s %s: %s", e.status, e.codigo, e.mensagem)
+        if e.codigo in _ERROS_ANEXO:
+            status, msg = _ERROS_ANEXO[e.codigo]
+            raise HTTPException(status, msg)
+        raise _erro_dify(e)
+    except httpx.HTTPError as e:
+        log.warning("Dify inacessível no anexo: %s", e)
+        raise HTTPException(502, "Não foi possível falar com o Dify. Tente de novo em instantes.")
+    fid = str(r.get("id") or "")
+    if not RX_ID.fullmatch(fid):
+        raise HTTPException(502, "O Dify não devolveu o arquivo como esperado.")
+    _anexos[fid] = {"username": user["username"], "agente_id": ag["id"], "tipo": tipo, "nome": nome, "t": time.time()}
+    return {"id": fid, "nome": nome, "tipo": "imagem" if tipo == "image" else "documento", "tamanho": len(dados)}
+
+
+def _anexos_da_pergunta(ids: list[str], ag: dict, username: str) -> list[dict]:
+    arquivos = []
+    for fid in dict.fromkeys(ids):
+        a = _anexos.get(_id(fid))
+        if not a or a["username"] != username or a["agente_id"] != ag["id"]:
+            raise HTTPException(400, "Um dos anexos expirou ou não é seu. Tire-o e anexe de novo.")
+        arquivos.append({"id": fid, **a})
+    return arquivos
+
+
 # Nomes amigáveis do que o agente está fazendo (ferramentas dos agentes do Dify)
 _STATUS = [
     (re.compile(r"qlik_", re.I), "Consultando o ERP no Qlik"),
@@ -467,13 +614,21 @@ async def chat(dados: ChatIn, ag: dict = Depends(agente_permitido), user: dict =
     username = user["username"]
     chave = ag["chave"]
     conversa = _id(dados.conversation_id, False)
+    arquivos = _anexos_da_pergunta(dados.arquivos, ag, username)
+    if arquivos:
+        cfg = (await _params_agente(ag))["anexos"]
+        if not cfg["ativo"]:
+            raise HTTPException(400, "Este agente não está mais recebendo anexos. Tire os anexos e envie de novo.")
+        if len(arquivos) > cfg["max"]:
+            raise HTTPException(400, f"Este agente aceita até {cfg['max']} anexo(s) por pergunta.")
+    nota_anexos = (f"{len(arquivos)} anexo(s): " + ", ".join(a["nome"] for a in arquivos)) if arquivos else ""
 
     async def gerar():
         enviado_inicio = False
         ultimo_status = None
         uso = {"conversa": conversa, "erro": "", "fim": False}  # vai para o registro de uso no final
         try:
-            async for ev in dify.stream_chat(chave, username, dados.pergunta.strip(), conversa):
+            async for ev in dify.stream_chat(chave, username, dados.pergunta.strip(), conversa, arquivos):
                 tipo = ev.get("event")
                 if not enviado_inicio and ev.get("conversation_id"):
                     enviado_inicio = True
@@ -510,8 +665,9 @@ async def chat(dados: ChatIn, ag: dict = Depends(agente_permitido), user: dict =
             yield _sse({"t": "erro", "v": f"Falha na comunicação com o agente: {type(e).__name__}"})
         finally:  # roda também quando a pessoa para a resposta ou fecha a página
             try:
+                situacao = uso["erro"] or ("" if uso["fim"] else "resposta interrompida")
                 db.registrar_uso(username, ag["id"], ag["nome"], "erro" if uso["erro"] else "pergunta", uso["conversa"],
-                                 uso["erro"] or ("" if uso["fim"] else "resposta interrompida"))
+                                 " · ".join(x for x in (situacao, nota_anexos) if x))
             except Exception:  # noqa: BLE001 - registro nunca derruba o chat
                 log.exception("falha ao registrar uso")
 
@@ -726,7 +882,8 @@ async def _mensagens_completas(ag: dict, username: str, cid: str) -> list[dict]:
     for m in sorted(todas.values(), key=lambda m: m.get("created_at") or 0):
         out.append({"id": m["id"], "pergunta": m.get("query") or "", "resposta": m.get("answer") or "",
                     "criado": m.get("created_at"), "avaliacao": (m.get("feedback") or {}).get("rating"),
-                    "fontes": _fontes({"retriever_resources": m.get("retriever_resources")})})
+                    "fontes": _fontes({"retriever_resources": m.get("retriever_resources")}),
+                    "anexos": _anexos_msg(m)})
     return out
 
 
@@ -776,7 +933,10 @@ def _txt_conversa(meta: dict, mensagens: list[dict]) -> str:
     if not mensagens:
         partes += ["(conversa sem mensagens)", ""]
     for m in mensagens:
-        partes += [f"[{_hora(m['criado'])}] {meta['usuario']}:", m["pergunta"].strip(), "",
+        partes += [f"[{_hora(m['criado'])}] {meta['usuario']}:", m["pergunta"].strip()]
+        if m.get("anexos"):
+            partes.append("Anexos: " + "; ".join(a["nome"] for a in m["anexos"]))
+        partes += ["",
                    f"[{_hora(m['criado'])}] {meta['agente']}:", m["resposta"].strip() or "(sem resposta)"]
         if m["fontes"]:
             partes.append("Fontes: " + "; ".join(f["documento"] for f in m["fontes"]))

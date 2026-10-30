@@ -119,6 +119,12 @@ def validar_conteudo(dados: bytes, ext: str) -> dict:
     elif ext in ("jpg", "jpeg"):
         if not dados.startswith(b"\xff\xd8\xff"):
             raise errado
+    elif ext == "webp":
+        if not (dados[:4] == b"RIFF" and dados[8:12] == b"WEBP"):
+            raise errado
+    elif ext == "gif":
+        if dados[:6] not in (b"GIF87a", b"GIF89a"):
+            raise errado
     elif ext in ("txt", "csv", "md"):
         if b"\x00" in dados[:65536]:
             raise errado

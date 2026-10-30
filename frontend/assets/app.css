@@ -253,7 +253,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 :root[data-tema="escuro"] .sugestao b { color: var(--flex-teal-300); }
 
 .msg { display: flex; margin: 0 auto 18px; }
-.msg-user { justify-content: flex-end; }
+.msg-user { justify-content: flex-end; flex-wrap: wrap; }
+.msg-user .anexos-msg { flex-basis: 100%; }
 .msg-user .bolha {
   background: var(--bolha-user); color: var(--bolha-user-texto); border-radius: 16px 16px 4px 16px;
   padding: 10px 14px; max-width: min(85%, 640px); white-space: pre-wrap; word-wrap: break-word;
@@ -313,6 +314,26 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 }
 .btn-enviar:disabled { opacity: .35; cursor: default; }
 .btn-parar { background: var(--erro); }
+/* ---------- anexos ---------- */
+.btn-anexar {
+  flex: none; width: 42px; height: 42px; margin-left: -8px; border-radius: 12px; border: 0; cursor: pointer; display: grid; place-items: center;
+  background: transparent; color: var(--texto-suave);
+}
+.btn-anexar:hover { background: rgba(127, 127, 127, .12); color: var(--texto); }
+.btn-anexar:disabled { opacity: .35; cursor: default; }
+.compositor-caixa.arrastando { border-color: var(--flex-teal-600); border-style: dashed; }
+.anexos-fila { max-width: 860px; margin: 0 auto 6px; display: flex; flex-wrap: wrap; gap: 6px; }
+.anexos-msg { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
+.chip-anexo {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 5px 8px; border-radius: 10px; font-size: 13px;
+  background: var(--superficie); border: 1px solid var(--borda); box-shadow: var(--sombra);
+}
+.chip-anexo .spinner { width: 14px; height: 14px; flex: none; }
+.chip-nome { min-width: 0; max-width: 240px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip-anexo.erro { border-color: var(--erro); background: var(--erro-bg); }
+.chip-erro { color: var(--erro); font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chip-tirar { border: 0; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; color: var(--texto-suave); }
+.chip-tirar:hover { color: var(--texto); }
 /* ---------- áudio ---------- */
 .btn-microfone, .btn-concluir {
   flex: none; width: 42px; height: 42px; border-radius: 12px; border: 0; cursor: pointer; display: grid; place-items: center;

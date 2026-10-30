@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=8">
+  <link rel="stylesheet" href="/assets/app.css?v=9">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -115,7 +115,12 @@
           </div>
         </div>
         <form class="compositor" id="form-chat">
+          <div class="anexos-fila" id="anexos-fila" hidden></div>
+          <input type="file" id="anexo-input" multiple hidden>
           <div class="compositor-caixa" id="compositor-caixa">
+            <button class="btn-anexar" id="btn-anexar" type="button" aria-label="Anexar arquivo" title="Anexar arquivo (imagem ou documento)" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16.5 6.5v10a4.5 4.5 0 01-9 0V5a3 3 0 016 0v10.5a1.5 1.5 0 01-3 0V6.5H9v9a3 3 0 006 0V5a4.5 4.5 0 00-9 0v11.5a6 6 0 0012 0v-10z"/></svg>
+            </button>
             <textarea id="pergunta" rows="1" placeholder="Pergunte ao Agente Técnico PU…" enterkeyhint="send" maxlength="8000"></textarea>
             <div class="gravando" id="gravando" hidden>
               <span class="grav-ponto" aria-hidden="true"></span>
@@ -495,6 +500,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=8" type="module"></script>
+  <script src="/assets/app.js?v=9" type="module"></script>
 </body>
 </html>

@@ -219,6 +219,43 @@ with sync_playwright() as p:
     checar("trocar de agente descarta a gravação", lambda: expect(adm.locator("#gravando")).to_be_hidden())
     checar("e a caixa de texto volta", lambda: expect(adm.locator("#pergunta")).to_be_visible())
 
+    # ------------------------------------------------------------------ anexos
+    print("== admin: anexos no chat (Upload de Arquivo)")
+    PDF = b"%PDF-1.4\n1 0 obj<<>>endobj\ntrailer<<>>\n%%EOF\n"
+    PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 200
+    checar("sem botão de anexar no agente sem o recurso", lambda: expect(adm.locator("#btn-anexar")).to_be_hidden())
+    adm.select_option("#sel-agente", label="PU completo")
+    checar("botão de anexar no agente com o recurso", lambda: expect(adm.locator("#btn-anexar")).to_be_visible())
+    adm.set_input_files("#anexo-input", files=[
+        {"name": "Ficha técnica.pdf", "mimeType": "application/pdf", "buffer": PDF},
+        {"name": "foto.png", "mimeType": "image/png", "buffer": PNG}])
+    checar("dois anexos na fila", lambda: expect(adm.locator("#anexos-fila .chip-anexo.ok")).to_have_count(2))
+    adm.set_input_files("#anexo-input", files=[{"name": "musica.mp3", "mimeType": "audio/mpeg", "buffer": b"ID3" + b"\0" * 50}])
+    checar("tipo não aceito avisa e não entra", lambda: expect(adm.locator("#toast")).to_contain_text("não aceito"))
+    checar("fila continua com dois", lambda: expect(adm.locator("#anexos-fila .chip-anexo")).to_have_count(2))
+    adm.set_input_files("#anexo-input", files=[{"name": "falso.pdf", "mimeType": "application/pdf", "buffer": b"MZ executavel"}])
+    checar("arquivo recusado pelo servidor fica marcado com o erro", lambda: expect(adm.locator("#anexos-fila .chip-anexo.erro")).to_contain_text("não corresponde"))
+    checar("limite de 3 desliga o botão", lambda: expect(adm.locator("#btn-anexar")).to_be_disabled())
+    print_(adm, "14-anexos")
+    adm.click("#btn-enviar")
+    checar("não envia com anexo com erro", lambda: expect(adm.locator("#toast")).to_contain_text("anexo com erro"))
+    adm.locator("#anexos-fila .chip-anexo.erro .chip-tirar").click()
+    checar("tirar o anexo com erro", lambda: expect(adm.locator("#anexos-fila .chip-anexo")).to_have_count(2))
+    adm.click("#btn-enviar")
+    checar("sem texto, pergunta padrão com os anexos", lambda: expect(adm.locator(".msg-user .bolha").last).to_have_text("Analise os arquivos anexados."))
+    checar("anexos aparecem na pergunta enviada",
+           lambda: expect(adm.locator(".msg-user").last.locator(".chip-nome")).to_have_text(["Ficha técnica.pdf", "foto.png"]))
+    checar("fila esvazia depois de enviar", lambda: expect(adm.locator("#anexos-fila")).to_be_hidden())
+    checar("agente responde", lambda: expect(adm.locator("#btn-parar")).to_be_hidden(timeout=15000))
+    adm.reload()
+    checar("ao reabrir a conversa, os anexos continuam na pergunta",
+           lambda: expect(adm.locator(".msg-user").last.locator(".chip-nome")).to_have_text(["Ficha técnica.pdf", "foto.png"]))
+    print_(adm, "15-anexos-historico")
+    adm.set_input_files("#anexo-input", files=[{"name": "nota.pdf", "mimeType": "application/pdf", "buffer": PDF}])
+    checar("novo anexo na fila", lambda: expect(adm.locator("#anexos-fila .chip-anexo.ok")).to_have_count(1))
+    adm.select_option("#sel-agente", label="Agente Comercial")
+    checar("trocar de agente limpa os anexos", lambda: expect(adm.locator("#anexos-fila")).to_be_hidden())
+
     # ------------------------------------------------------------------ maria
     print("== maria: só o comercial")
     maria = novo()
@@ -559,8 +596,8 @@ with sync_playwright() as p:
     entrar(escuro, "admin.ti")
     print_(escuro, "11-escuro-chat")
 
-    # respostas 400/401/403 esperadas (login, chave recusada, acesso tirado) aparecem como "Failed to load resource"
-    reais = [e for e in erros_console if not re.search(r"Failed to load resource: .* (400|401|403) ", e)]
+    # respostas 400/401/403/415 esperadas (login, chave recusada, acesso tirado, anexo recusado) aparecem como "Failed to load resource"
+    reais = [e for e in erros_console if not re.search(r"Failed to load resource: .* (400|401|403|415) ", e)]
     ok(not reais, f"sem erros de JavaScript no console {reais[:3]}")
     nav.close()
 

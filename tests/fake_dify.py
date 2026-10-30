@@ -21,7 +21,7 @@ CHAVE_WORKFLOW = "app-Fluxo00000000000000000"
 APPS = {
     CHAVE_PU: {"name": "Agente Técnico PU(qlik)", "description": "Especialista em poliuretano com acesso ao Qlik.",
                "mode": "agent-chat", "icon": "🧪", "icon_background": "#E4FBCC", "ferramentas": True,
-               "voz_para_texto": True},
+               "voz_para_texto": True, "anexos": ["image", "document"]},
     CHAVE_COMERCIAL: {"name": "Agente Comercial", "description": "Tira dúvidas de catálogo, sem acesso ao ERP.",
                       "mode": "advanced-chat", "icon": "💼", "icon_background": "#D1E9FF", "ferramentas": False,
                       "sugestoes": ["Quais espumas temos para colchões?"]},
@@ -31,6 +31,8 @@ APPS = {
 CONVERSAS: dict[str, dict] = {}
 MENSAGENS: dict[str, list] = {}
 ULTIMO_AUDIO: dict = {}
+ARQUIVOS: dict[str, dict] = {}   # /files/upload
+ULTIMO_CHAT: dict = {}           # corpo da última pergunta (o teste confere os arquivos repassados)
 
 RESPOSTA_PU = """## FLEXX AG 2032 — visão geral
 
@@ -95,7 +97,34 @@ async def parametros(req: Request):
         return _negado()
     return {"opening_statement": "", "suggested_questions": a.get("sugestoes", []),
             "suggested_questions_after_answer": {"enabled": False},
-            "speech_to_text": {"enabled": a.get("voz_para_texto", False)}}
+            "speech_to_text": {"enabled": a.get("voz_para_texto", False)},
+            "file_upload": ({"enabled": True, "allowed_file_types": a["anexos"], "allowed_file_extensions": [],
+                             "allowed_file_upload_methods": ["local_file", "remote_url"], "number_limits": 3,
+                             "image": {"enabled": False}}
+                            if a.get("anexos") else {"enabled": False, "image": {"enabled": False}}),
+            "system_parameters": {"file_size_limit": 15, "image_file_size_limit": 10}}
+
+
+@app.post("/v1/files/upload")
+async def enviar_arquivo(req: Request):
+    chave, a = _app(req)
+    if not a:
+        return _negado()
+    form = await req.form()
+    arquivo = form.get("file")
+    if not form.get("user") or arquivo is None:
+        return JSONResponse({"code": "no_file_uploaded", "message": "Please upload your file."}, 400)
+    dados = await arquivo.read()
+    fid = str(uuid.uuid4())
+    ARQUIVOS[fid] = {"id": fid, "name": arquivo.filename, "size": len(dados), "mime_type": arquivo.content_type,
+                     "user": form.get("user"), "app": chave}
+    return {"id": fid, "name": arquivo.filename, "size": len(dados), "extension": arquivo.filename.rsplit(".", 1)[-1],
+            "mime_type": arquivo.content_type, "created_by": form.get("user"), "created_at": int(time.time())}
+
+
+@app.get("/teste/ultimo-chat")
+async def teste_ultimo_chat():
+    return ULTIMO_CHAT
 
 
 @app.post("/v1/audio-to-text")
@@ -228,6 +257,15 @@ async def chat(req: Request):
     if a["mode"] not in ("chat", "agent-chat", "advanced-chat"):
         return JSONResponse({"code": "not_chat_app", "message": "App unavailable"}, 400)
     b = await req.json()
+    ULTIMO_CHAT.clear()
+    ULTIMO_CHAT.update(b)
+    anexos = []
+    for f in b.get("files") or []:
+        arq = ARQUIVOS.get(f.get("upload_file_id"))
+        if not arq or arq["app"] != chave or f.get("transfer_method") != "local_file":
+            return JSONResponse({"code": "invalid_param", "message": "File not found."}, 400)
+        anexos.append({"id": arq["id"], "filename": arq["name"], "type": f.get("type"), "belongs_to": "user",
+                       "url": f"http://dify/files/{arq['id']}?sign=x", "mime_type": arq["mime_type"]})
     cid = b.get("conversation_id") or str(uuid.uuid4())
     if b.get("conversation_id") and not _conversa_do(chave, b["user"], cid):
         return JSONResponse({"code": "not_found", "message": "Conversation Not Exists."}, 404)
@@ -260,7 +298,7 @@ async def chat(req: Request):
         yield ev({"event": "message_end", "id": mid, "metadata": {"retriever_resources": fontes}})
         MENSAGENS.setdefault(cid, []).append({"id": mid, "conversation_id": cid, "query": pergunta, "answer": resposta,
                                               "created_at": int(time.time()), "feedback": None,
-                                              "retriever_resources": fontes[:1]})
+                                              "retriever_resources": fontes[:1], "message_files": anexos})
         CONVERSAS[cid]["updated_at"] = int(time.time())
         if novo:
             CONVERSAS[cid]["name"] = pergunta[:40]
