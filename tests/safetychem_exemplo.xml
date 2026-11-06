@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8" standalone="yes"?>
+<!-- Exportação SINTÉTICA no formato do SafetyChem (só para testes): nomes, CAS e concentrações inventados. -->
+<Produtos>
+  <Produto>
+    <Embalagem_usada>Não reutilize embalagens vazias.</Embalagem_usada>
+    <Composicao_-_EPI>
+      <Composicao_-_EPI>Luvas de proteção adequadas</Composicao_-_EPI>
+      <Composicao_-_EPI>Óculos de proteção</Composicao_-_EPI>
+    </Composicao_-_EPI>
+    <Incompativel_com>Ácidos, água e aminas.</Incompativel_com>
+    <Mistura>True</Mistura>
+    <Para_o_pessoal_de_servico_de_emergencia>Isole o vazamento de fontes de ignição.</Para_o_pessoal_de_servico_de_emergencia>
+    <Precaucões_ao_meio_ambiente>Evite que o produto derramado atinja cursos d’água.</Precaucões_ao_meio_ambiente>
+    <Precaucões_para_manuseio_seguro>Manuseie em uma área ventilada.</Precaucões_para_manuseio_seguro>
+    <Prevencao_de_incencio_e_explosao>Não é esperado que o produto apresente perigo de incêndio ou explosão.</Prevencao_de_incencio_e_explosao>
+    <Principal_uso_recomendado>Uso industrial.</Principal_uso_recomendado>
+    <Sintomas_e_efeitos_mais_importantes__agudos_e_tardios>Provoca irritação à pele.</Sintomas_e_efeitos_mais_importantes__agudos_e_tardios>
+    <Pictogramas_-__Transporte />
+    <Hommel>
+      <Hommel>2</Hommel>
+      <Hommel>1</Hommel>
+      <Hommel>0</Hommel>
+    </Hommel>
+    <Solubilidade_em_agua>Parcialmente miscível em água</Solubilidade_em_agua>
+    <Nome_comercial>FLEXX AG 2032</Nome_comercial>
+    <CAS>Não aplicável</CAS>
+    <Frases_de_Perigo>
+      <Frases_de_Perigo>Nocivo se ingerido</Frases_de_Perigo>
+      <Frases_de_Perigo>Fatal se inalado</Frases_de_Perigo>
+    </Frases_de_Perigo>
+    <Pictogramas_-_GHS>
+      <Pictogramas_-_GHS>09</Pictogramas_-_GHS>
+      <Pictogramas_-_GHS>07</Pictogramas_-_GHS>
+    </Pictogramas_-_GHS>
+    <Palavras_de_Advertencia>PERIGO</Palavras_de_Advertencia>
+    <Composicao_-_Secao_3_FISPQ>Segredo industrial 1: 18,75 - 31,25% (Classificação: H315) \super 1\super0 ;
+Segredo industrial 2: 11,25 - 18,75% (Classificação: H330) \super 2\super0.</Composicao_-_Secao_3_FISPQ>
+    <Descricao_do_Produto_-_Nome_Quimico>FLEXX AG 2032</Descricao_do_Produto_-_Nome_Quimico>
+    <Codigo_da_empresa />
+    <Nome_apropriado_para_embarque />
+    <Numero_ONU>0</Numero_ONU>
+    <Aspecto>Líquido transparente com odor aminado.</Aspecto>
+    <EPI>Luvas de proteção adequadas. Óculos de proteção.#“O EPI do motorista está especificado na ABNT NBR 9735”.</EPI>
+    <Vazamento>Isole a área. \b Transbordo\b0 : o serviço de emergência deve estar presente.</Vazamento>
+    <Fogo_Acidente>\b Meios de extinção adequados\b0 : dióxido de carbono (CO₂), espuma e pó químico. \b Inadequados\b0 : jatos de água de forma direta.</Fogo_Acidente>
+    <Informacões_ao_Medico>Tratamento sintomático.</Informacões_ao_Medico>
+    <URL_FISPQ>https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032</URL_FISPQ>
+    <URL_FISPQ />
+    <Precaucao_Geral />
+    <Prevencao>PREVENÇÃO:#P260 Não inale vapores#P280 Use luvas de proteção#</Prevencao>
+    <Armazenamento>ARMAZENAMENTO:#P405 Armazene em local fechado à chave#</Armazenamento>
+    <Disposicao>DISPOSIÇÃO:#P501 Descarte o conteúdo em conformidade com as regulamentações locais#</Disposicao>
+    <Resposta_a_Emergencia>RESPOSTA À EMERGÊNCIA:#P304+P340 EM CASO DE INALAÇÃO: Remova a pessoa para local ventilado#</Resposta_a_Emergencia>
+    <Produto_Perigoso>True</Produto_Perigoso>
+    <Versao>04</Versao>
+    <Inalacao>Remova a vítima para local ventilado.</Inalacao>
+    <ContatoComAPele>Lave com água em abundância.</ContatoComAPele>
+    <ContatoComOsOlhos>Lave os olhos com água.</ContatoComOsOlhos>
+    <Ingestao>Não induza o vômito.</Ingestao>
+    <Documentos_NotasparaMedico>Tratamento sintomático.</Documentos_NotasparaMedico>
+    <NBR14725MedidasDeProtecaoEquipeCombateIncendio>Utilizar equipamento autônomo (SCBA).</NBR14725MedidasDeProtecaoEquipeCombateIncendio>
+    <ExportarDados_DensidadeAbsolutaSinal />
+    <ExportarDados_DensidadeAbsolutaValorInicial>1230,00000</ExportarDados_DensidadeAbsolutaValorInicial>
+    <ExportarDados_DensidadeAbsolutaValorFinal />
+    <ExportarDados_DensidadeAbsolutaUnidade>kg/m³</ExportarDados_DensidadeAbsolutaUnidade>
+    <ExportarDados_DensidadeAbsolutaTemperaturaInicial>25,00000</ExportarDados_DensidadeAbsolutaTemperaturaInicial>
+    <Estabilidade>Estável</Estabilidade>
+    <ExportarDados_EstabilidadeDescricao>Produto estável em condições normais de temperatura e pressão.</ExportarDados_EstabilidadeDescricao>
+    <ExportarDados_PontoDeFulgorSinal>&gt;</ExportarDados_PontoDeFulgorSinal>
+    <ExportarDados_PontoDeFulgorValorInicial>180,00000</ExportarDados_PontoDeFulgorValorInicial>
+    <Ingredientes>
+      <Ingrediente>
+        <Composicao_-_CAS>11111-11-1</Composicao_-_CAS>
+        <Composicao_-_Concentracao>60,0000000000</Composicao_-_Concentracao>
+        <Composicao_-_Descricao_Concentracao>45,00 - 75,00%</Composicao_-_Descricao_Concentracao>
+        <Composicao_-_Nome>INGREDIENTE SECRETO ALFA</Composicao_-_Nome>
+        <Composicao_-_Segredo_Industrial>True</Composicao_-_Segredo_Industrial>
+      </Ingrediente>
+      <Ingrediente>
+        <Composicao_-_CAS>22222-22-2</Composicao_-_CAS>
+        <Composicao_-_Concentracao>15,0000000000</Composicao_-_Concentracao>
+        <Composicao_-_Descricao_Concentracao>11,25 - 18,75%</Composicao_-_Descricao_Concentracao>
+        <Composicao_-_Nome>INGREDIENTE SECRETO BETA</Composicao_-_Nome>
+        <Composicao_-_Segredo_Industrial>True</Composicao_-_Segredo_Industrial>
+      </Ingrediente>
+    </Ingredientes>
+  </Produto>
+  <Produto>
+    <Nome_comercial>FLEXX AG 2047</Nome_comercial>
+    <Descricao_do_Produto_-_Nome_Quimico>FLEXX AG 2047</Descricao_do_Produto_-_Nome_Quimico>
+    <Frases_de_Perigo>
+      <Frases_de_Perigo>Tóxico se ingerido</Frases_de_Perigo>
+    </Frases_de_Perigo>
+    <Pictogramas_-_GHS>
+      <Pictogramas_-_GHS>07</Pictogramas_-_GHS>
+    </Pictogramas_-_GHS>
+    <Palavras_de_Advertencia>PERIGO</Palavras_de_Advertencia>
+    <Pictogramas_-__Transporte>
+      <Pictogramas_-__Transporte>rr61</Pictogramas_-__Transporte>
+    </Pictogramas_-__Transporte>
+    <Nome_apropriado_para_embarque>LÍQUIDO TÓXICO, ORGÂNICO, N.E.</Nome_apropriado_para_embarque>
+    <Numero_de_risco>60</Numero_de_risco>
+    <Numero_ONU>2810</Numero_ONU>
+    <Classe_ou_subclasse_de_risco>6.1</Classe_ou_subclasse_de_risco>
+    <Grupo_de_embalagem>III</Grupo_de_embalagem>
+    <Composicao_-_Secao_3_FISPQ>Ingrediente público (CAS 33333-33-3): 1 - 5%</Composicao_-_Secao_3_FISPQ>
+    <URL_FISPQ>https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002047</URL_FISPQ>
+    <URL_FISPQ>https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-0000000020fe</URL_FISPQ>
+    <Produto_Perigoso>True</Produto_Perigoso>
+    <Versao>02</Versao>
+    <Ingredientes>
+      <Ingrediente>
+        <Composicao_-_CAS>33333-33-3</Composicao_-_CAS>
+        <Composicao_-_Descricao_Concentracao>1 - 5%</Composicao_-_Descricao_Concentracao>
+        <Composicao_-_Nome>INGREDIENTE PUBLICO GAMA</Composicao_-_Nome>
+        <Composicao_-_Segredo_Industrial>False</Composicao_-_Segredo_Industrial>
+      </Ingrediente>
+      <Ingrediente>
+        <Composicao_-_CAS>44444-44-4</Composicao_-_CAS>
+        <Composicao_-_Descricao_Concentracao>30 - 60%</Composicao_-_Descricao_Concentracao>
+        <Composicao_-_Nome>INGREDIENTE SECRETO DELTA</Composicao_-_Nome>
+        <Composicao_-_Segredo_Industrial>True</Composicao_-_Segredo_Industrial>
+      </Ingrediente>
+    </Ingredientes>
+  </Produto>
+</Produtos>

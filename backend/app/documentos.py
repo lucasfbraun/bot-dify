@@ -150,6 +150,10 @@ def buscar(itens: list[dict], produto: str, tipo: str = "") -> list[dict]:
     return [a[-1] for a in achados[:MAX_RESULTADOS]]
 
 
+def _sem_marca(nome_normalizado: str) -> str:
+    return re.sub(r"^flexx ", "", nome_normalizado)
+
+
 def parecidos(itens: list[dict], produto: str, limite: int = 8) -> list[str]:
     """Produtos com alguma palavra em comum, para o agente sugerir quando não acha o pedido."""
     termos = set(normalizar(produto).split()) - {"flexx"}
@@ -188,11 +192,20 @@ async def ferramenta_documentos(request: Request, produto: str = "", tipo: str =
     if not normalizar(produto):
         raise HTTPException(400, "Informe o produto (ex.: AG 2047).")
     itens = await indice()
-    achados = buscar(itens, produto, tipo)
+    achados = [_publico(i) for i in buscar(itens, produto, tipo)]
+    # SafetyChem é a fonte oficial: para os produtos que estão lá, a FISPQ e a ficha de emergência antigas da
+    # pasta saem e entram os links oficiais
+    from . import safetychem  # import tardio: safetychem depende deste módulo
+    oficiais = safetychem.documentos_oficiais(produto, tipo)
+    if oficiais:
+        substituidos = {(_sem_marca(o["_chave"]), o["tipo"]) for o in oficiais}
+        achados = [d for d in achados if (_sem_marca(normalizar(d["produto"])), d["tipo"]) not in substituidos]
+        achados = [{k: v for k, v in o.items() if not k.startswith("_")} for o in oficiais] + achados
     if achados:
-        return {"encontrados": len(achados), "documentos": [_publico(i) for i in achados],
+        return {"encontrados": len(achados), "documentos": achados[:MAX_RESULTADOS],
                 "orientacao": "Mostre ao usuário cada documento pedido usando exatamente o link_markdown "
-                              "(é por ele que o usuário abre ou baixa o arquivo). Não invente links."}
+                              "(é por ele que o usuário abre ou baixa o arquivo). Não invente links. Documentos com "
+                              "fonte \"SafetyChem (oficial, atualizada)\" substituem as versões antigas."}
     sugestoes = parecidos(itens, produto)
     return {"encontrados": 0, "documentos": [], "produtos_parecidos": sugestoes,
             "orientacao": (_indice["erro"] or "Nenhum documento atual encontrado para esse produto"
@@ -222,6 +235,18 @@ async def ferramenta_openapi(request: Request):
                  "description": "Opcional: boletim, fispq, ficha de emergencia, certificado. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentos encontrados"}},
+        }}, "/api/ferramentas/fispq-safetychem": {"get": {
+            "operationId": "fispq_safetychem",
+            "summary": "Dados da FISPQ/FDS OFICIAL e atualizada do produto (SafetyChem/Intertox): classificação, "
+                       "pictogramas, frases de perigo e de precaução, EPI, primeiros socorros, combate a incêndio, "
+                       "vazamento, manuseio, transporte (ONU, classe), ficha de emergência e composição publicada "
+                       "(Seção 3). Prevalece sobre FISPQs antigas. Use em qualquer pergunta de segurança, "
+                       "manuseio, transporte ou descarte de um produto.",
+            "parameters": [
+                {"name": "produto", "in": "query", "required": True, "schema": {"type": "string"},
+                 "description": "Nome do produto, ex.: AG 2032, FLEXX HR 3530"},
+            ],
+            "responses": {"200": {"description": "FISPQ oficial do produto"}},
         }}},
         "components": {"securitySchemes": {"chave": {"type": "http", "scheme": "bearer"}}},
         "security": [{"chave": []}],

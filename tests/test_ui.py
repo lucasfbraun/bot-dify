@@ -605,6 +605,15 @@ with sync_playwright() as p:
     print_(adm, "27-chave-restrita")
     adm.keyboard.press("Escape")
 
+    print("== FISPQs oficiais do SafetyChem (importar XML)")
+    checar("cartão do SafetyChem na aba Agentes", lambda: expect(adm.locator("#sc-status")).to_contain_text("Nenhum produto importado"))
+    adm.set_input_files("#sc-arquivo", os.path.join(os.path.dirname(os.path.abspath(__file__)), "safetychem_exemplo.xml"))
+    checar("importa e mostra o resumo", lambda: expect(adm.locator("#toast")).to_contain_text("2 produtos lidos · 2 novos"))
+    checar("situação atualizada", lambda: expect(adm.locator("#sc-status")).to_contain_text("2 produtos importados"))
+    print_(adm, "29-safetychem")
+    adm.set_input_files("#sc-arquivo", files=[{"name": "errado.xml", "mimeType": "application/xml", "buffer": b"<Clientes/>"}])
+    checar("XML errado: explica como exportar", lambda: expect(adm.locator("#toast")).to_contain_text("SafetyChem"))
+
 
     print("== celular")
     cel = novo({"width": 390, "height": 844})

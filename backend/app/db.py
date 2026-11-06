@@ -125,6 +125,15 @@ CREATE TABLE IF NOT EXISTS eventos_conhecimento (
     detalhe    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_eventos_conh_quando ON eventos_conhecimento(quando);
+-- FISPQs oficiais importadas do SafetyChem (Intertox); chave = nome comercial normalizado
+CREATE TABLE IF NOT EXISTS safetychem (
+    chave          TEXT PRIMARY KEY,
+    nome           TEXT NOT NULL,
+    versao         TEXT,
+    dados          TEXT NOT NULL,
+    importado_em   TEXT NOT NULL,
+    importado_por  TEXT
+);
 """
 
 # colunas acrescentadas em tabelas que já existiam em versões anteriores (o CREATE IF NOT EXISTS não as cria)

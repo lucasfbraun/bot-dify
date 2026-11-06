@@ -348,6 +348,67 @@ code, eventos = conversar(adm, PU, "me traga o boletim do AG 2047")
 texto = "".join(e["v"] for e in eventos if e["t"] == "texto")
 ok("[📄 Boletim FLEXX AG 2047.pdf](/api/documentos/" in texto, "agente chama a ferramenta e responde com o link")
 
+# ------------------------------------------------------------------ SafetyChem (FISPQs oficiais)
+secao("SafetyChem: importação do XML e FISPQ oficial")
+XML_SC = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "safetychem_exemplo.xml"), "rb").read()
+XML = {"Content-Type": "application/xml"}
+ok(maria.post("/api/admin/safetychem/importar", content=XML_SC, headers=XML).status_code == 403, "só admin importa")
+ok(adm.post("/api/admin/safetychem/importar", content=b"nao e xml", headers=XML).status_code == 400, "arquivo que não é XML -> 400")
+r = adm.post("/api/admin/safetychem/importar", content=b"<Clientes><Cliente/></Clientes>", headers=XML)
+ok(r.status_code == 400 and "SafetyChem" in r.json()["detail"], "XML de outra coisa -> 400 explicando como exportar")
+r = adm.post("/api/admin/safetychem/importar", headers=XML,
+             content=b'<?xml version="1.0"?><!DOCTYPE x [<!ENTITY a "aaaa">]><Produtos><Produto><Nome_comercial>&a;</Nome_comercial></Produto></Produtos>')
+ok(r.status_code == 400 and "DOCTYPE" in r.json()["detail"], "XML com DOCTYPE/ENTITY recusado")
+r = adm.post("/api/admin/safetychem/importar", content=XML_SC, headers=XML)
+ok(r.status_code == 200 and r.json() == {"total": 2, "novos": 2, "atualizados": 0, "sem_alteracao": 0}, f"importa 2 produtos ({r.json()})")
+r = adm.post("/api/admin/safetychem/importar", content=XML_SC, headers=XML).json()
+ok(r["novos"] == 0 and r["atualizados"] == 0 and r["sem_alteracao"] == 2, "reimportar o mesmo arquivo não duplica")
+r = adm.post("/api/admin/safetychem/importar", content=XML_SC.replace(b"<Versao>04</Versao>", b"<Versao>05</Versao>"), headers=XML).json()
+ok(r["atualizados"] == 1 and r["sem_alteracao"] == 1, "nova versão de um produto: atualiza só ele")
+st = adm.get("/api/admin/safetychem").json()
+ok(st["produtos"] == 2 and st["ultima_importacao"]["atualizados"] == 1 and st["ultima_importacao"]["por"] == "admin.ti",
+   "situação da importação para o admin")
+
+FISPQ = "/api/ferramentas/fispq-safetychem"
+ok(anon.get(FISPQ, params={"produto": "AG 2032"}).status_code == 401, "ferramenta da FISPQ sem chave -> 401")
+r = anon.get(FISPQ, params={"produto": "ag 2032"}, headers=CHAVE_DOCS)
+fq = r.json()
+p32 = fq["produtos"][0]
+ok(r.status_code == 200 and fq["encontrados"] == 1 and p32["nome"] == "FLEXX AG 2032" and p32["versao"] == "05",
+   "acha a FISPQ oficial pelo nome (versão atualizada)")
+ok(p32["classificacao"]["pictogramas"] == ["09 - Perigo à saúde (silhueta)", "07 - Toxicidade aguda (caveira)"]
+   and p32["classificacao"]["frases_perigo"] == ["Nocivo se ingerido", "Fatal se inalado"], "pictogramas com nome e frases de perigo")
+ok(p32["precaucoes"]["prevencao"] == ["P260 Não inale vapores", "P280 Use luvas de proteção"], "precauções separadas por seção, sem o cabeçalho")
+ok(p32["combate_incendio"]["meios_extincao"].startswith("Meios de extinção adequados: dióxido") and "\\b" not in r.text,
+   "texto sem a marcação do SafetyChem (\\b ... \\b0)")
+ok(p32["propriedades"]["densidade_absoluta"] == "1230 kg/m³ a 25 °C" and p32["propriedades"]["ponto_de_fulgor"] == "> 180 °C",
+   "propriedades físicas formatadas")
+ok(p32["transporte"]["classificado_para_transporte"] is False and p32["transporte"]["numero_onu"] == "",
+   "ONU 0 = não classificado para transporte")
+ok("Segredo industrial 1: 18,75 - 31,25%" in p32["composicao_secao3_publicada"], "composição como publicada na Seção 3")
+ok("SECRETO" not in r.text and "11111-11-1" not in r.text and "22222-22-2" not in r.text and p32["ingredientes_publicos"] == [],
+   "ingredientes em segredo industrial NUNCA saem")
+ok(p32["link_markdown_fispq"] == "[📄 FISPQ FLEXX AG 2032 (SafetyChem, versão 05)](https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032)",
+   "link da FISPQ oficial pronto para a resposta")
+p47 = anon.get(FISPQ, params={"produto": "FLEXX® AG 2047"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(p47["transporte"]["numero_onu"] == "2810" and p47["transporte"]["rotulos_risco"] == ["Classe 6.1 - Tóxico"]
+   and p47["ingredientes_publicos"] == [{"nome": "INGREDIENTE PUBLICO GAMA", "cas": "33333-33-3", "faixa": "1 - 5%"}]
+   and "DELTA" not in json.dumps(p47), "transporte e ingrediente público; o secreto do mesmo produto fica de fora")
+r = anon.get(FISPQ, params={"produto": "HR 3530"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 0 and "catálogo" in r["orientacao"], "produto fora do SafetyChem: orienta usar a FISPQ antiga com aviso")
+r = anon.get(FERR, params={"produto": "AG 2047"}, headers=CHAVE_DOCS).json()
+arqs = [(d["tipo"], d["arquivo"]) for d in r["documentos"]]
+ok(("FISPQ", "FISPQ FLEXX AG 2047 (SafetyChem, versão 02)") in arqs and ("Ficha de emergência", "Ficha de emergência FLEXX AG 2047 (SafetyChem)") in arqs
+   and not any(a == "FISPQ - FLEXX AG 2047.pdf" for _, a in arqs) and ("Boletim técnico", "Boletim FLEXX AG 2047.pdf") in arqs,
+   f"documentos: FISPQ antiga da pasta sai, entra a oficial; boletins continuam ({arqs})")
+r = anon.get(FERR, params={"produto": "AG 2047", "tipo": "fispq"}, headers=CHAVE_DOCS).json()
+ok([d["link"] for d in r["documentos"]] == ["https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002047"],
+   "pedindo só a FISPQ: vem só a oficial")
+r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 1 and r["documentos"][0]["fonte"].startswith("SafetyChem"), "produto só no SafetyChem: entrega a FISPQ oficial")
+esq = anon.get("/api/ferramentas/openapi.json").json()
+ok(esq["paths"][FISPQ]["get"]["operationId"] == "fispq_safetychem", "esquema OpenAPI inclui a ferramenta da FISPQ")
+
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")
 r = adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM, 9999]})

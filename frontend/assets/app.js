@@ -165,7 +165,7 @@ function renderMarkdown(el, texto, comCursor = false) {
   const html = window.marked ? marked.parse(texto || '', { gfm: true, breaks: true }) : esc(texto);
   el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(html) : esc(texto);
   // documentos da pasta de produtos (ferramenta do agente): viram botões de abrir/baixar
-  for (const a of el.querySelectorAll('a[href^="/api/documentos/"]')) {
+  for (const a of el.querySelectorAll('a[href^="/api/documentos/"], a[href^="https://safetychem.com.br/Doc?"]')) {
     a.classList.add('link-doc');
     a.title = 'Abrir ou baixar';
   }
@@ -1616,6 +1616,7 @@ function abrirAgentesUsuario(u, modo = 'agentes') {
 /* ---- aba Agentes ---- */
 async function carregarAgentesAdmin() {
   carregarConfigConhecimento();
+  carregarSafetychem();
   const lista = $('#lista-agentes');
   if (!estado.adminAgentes.length) lista.innerHTML = '<p class="muted">Carregando…</p>';
   try {
@@ -2509,6 +2510,39 @@ async function carregarConfigConhecimento() {
   }
 }
 
+/* ---- FISPQs oficiais do SafetyChem: importação do XML exportado ---- */
+async function carregarSafetychem() {
+  try {
+    const s = await getJSON('/api/admin/safetychem');
+    const u = s.ultima_importacao;
+    $('#sc-status').textContent = s.produtos
+      ? `${s.produtos} produto${s.produtos === 1 ? '' : 's'} importado${s.produtos === 1 ? '' : 's'}`
+        + (u ? ` · última importação em ${dataHora(u.quando)} por ${u.por} (${u.novos} novos, ${u.atualizados} atualizados)` : '')
+      : 'Nenhum produto importado ainda. Enquanto isso, o agente usa as FISPQs antigas da pasta e do catálogo.';
+    $('#cartao-safetychem').classList.toggle('pendente', !s.produtos);
+  } catch (e) {
+    $('#sc-status').textContent = e.message;
+  }
+}
+
+async function importarSafetychem(arquivo) {
+  const btn = $('#btn-sc-importar');
+  btn.disabled = true;
+  btn.textContent = 'Importando…';
+  try {
+    const r = await (await api('/api/admin/safetychem/importar', {
+      metodo: 'POST', bruto: new Blob([arquivo], { type: 'application/xml' }),
+    })).json();
+    toast(`SafetyChem: ${r.total} produtos lidos · ${r.novos} novos · ${r.atualizados} atualizados · ${r.sem_alteracao} sem alteração.`, 7000);
+    carregarSafetychem();
+  } catch (e) {
+    toast(e.message, 7000);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Importar XML';
+  }
+}
+
 /* ---- Bases de conhecimento (cadastradas): "+ Adicionar base de conhecimento", como "+ Adicionar agente" ---- */
 async function carregarBasesAdmin(c) {
   const lista = $('#lista-bases');
@@ -2837,6 +2871,12 @@ function ligarEventos() {
   $('#btn-chave-conh').addEventListener('click', abrirChaveConhecimento);
   $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
   $('#btn-add-base').addEventListener('click', abrirDialogoBase);
+  $('#btn-sc-importar').addEventListener('click', () => $('#sc-arquivo').click());
+  $('#sc-arquivo').addEventListener('change', (e) => {
+    const f = e.target.files[0];
+    e.target.value = '';
+    if (f) importarSafetychem(f);
+  });
   $('#form-base').addEventListener('submit', salvarBase);
   $('#form-correcao').addEventListener('submit', enviarCorrecao);
   $('#menu-tema').addEventListener('click', alternarTema);

@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=12">
+  <link rel="stylesheet" href="/assets/app.css?v=13">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -278,6 +278,15 @@
             </div>
             <div id="lista-bases" class="lista-usuarios"></div>
           </div>
+          <div class="cartao-config" id="cartao-safetychem">
+            <div class="cartao-config-texto">
+              <strong>FISPQs oficiais do SafetyChem (Intertox)</strong>
+              <span class="muted" id="sc-status">Carregando…</span>
+              <span class="muted dica">No SafetyChem: Dados &gt; Exportar, campos da FISPQ e da ficha de emergência (inclua "URL do documento publicado"), formato <b>XML</b>. Importar de novo atualiza os produtos alterados, sem duplicar. Ingredientes marcados como segredo industrial são descartados.</span>
+            </div>
+            <input type="file" id="sc-arquivo" accept=".xml,text/xml,application/xml" hidden>
+            <button class="btn btn-texto" type="button" id="btn-sc-importar">Importar XML</button>
+          </div>
           <div class="barra-aba">
             <p class="muted">Agentes de conversa do Dify. Cada um usa a própria chave de API, que fica só no servidor.</p>
             <button class="btn btn-primario" id="btn-add-agente">
@@ -500,6 +509,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=12" type="module"></script>
+  <script src="/assets/app.js?v=13" type="module"></script>
 </body>
 </html>

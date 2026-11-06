@@ -15,6 +15,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Anexos no chat**: nos agentes com "Upload de Arquivo" ligado no Dify, o clipe anexa imagens e documentos (ou um print colado) para o agente analisar naquela pergunta. O arquivo vai direto para o Dify e não fica guardado aqui.
 - **Ouvir a resposta**: nos agentes com "Texto para voz" ligado no Dify, o botão 🔊 lê a resposta com a voz do agente, sem ler tabelas nem símbolos de formatação.
 - **Documentos de produto para baixar**: peça "me traga o boletim do AG 2047" e o agente responde com botões para abrir o PDF ou baixar o Word, direto da pasta *Documentação de Produto* da rede (só a versão atual, nunca os obsoletos).
+- **FISPQs oficiais do SafetyChem (Intertox)**: o admin importa o XML exportado do SafetyChem e o agente passa a usar a FISPQ oficial e atualizada (perigos, precauções, EPI, transporte, emergência), que prevalece sobre as FISPQs antigas. Ingredientes em segredo industrial são descartados na importação.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -396,6 +397,33 @@ Quando alguém pede *"me traga o boletim do AG 2047"*, o agente chama a ferramen
 | `DOCUMENTOS_PASTA` | `/mnt/doc_produto` | Pasta no servidor (repassada ao container em `/docs/produto`). |
 | `DOCUMENTOS_INDICE_MIN` | `15` | De quantos em quantos minutos a pasta é relida. |
 | `DOCUMENTOS_URL_FERRAMENTA` | (vazio) | Endereço da plataforma visto pelo Dify, se for diferente do usado para importar. |
+
+## FISPQs oficiais do SafetyChem (Intertox)
+
+O SafetyChem é a fonte **oficial e atualizada** das FISPQs/FDS e fichas de emergência. A documentação da pasta e do Catálogo é antiga: **quando um produto está no SafetyChem, vale o SafetyChem.**
+
+### Importar (administração)
+
+1. No SafetyChem: **Dados → Exportar**. Em *Documentos*, marque **FISPQ – Português** e **Ficha de emergência para o transporte – Português**; em *Campos*, marque todos (inclusive **URL do documento publicado**). Salve como pré-seleção (ex.: "Agente IA") para reusar. Escolha os produtos e o formato **XML** (não o "Layout 2").
+2. Na plataforma: **Administração → Agentes → FISPQs oficiais do SafetyChem → Importar XML**.
+3. Reimportar quando houver revisões: produtos alterados são atualizados, novos entram, nada duplica (a chave é o nome comercial). O cartão mostra quantos produtos há e a última importação; cada importação fica na auditoria.
+
+### O que o agente recebe
+
+- Ferramenta **fispq_safetychem** (mesma chave e mesmo esquema OpenAPI da ferramenta de documentos): classificação (palavra de advertência, pictogramas com o nome, frases de perigo), precauções por seção (prevenção, resposta à emergência, armazenamento, disposição), EPI, primeiros socorros, combate a incêndio, vazamento, manuseio e incompatibilidades, propriedades (aspecto, densidade, ponto de fulgor, estabilidade), diagrama de Hommel, transporte (ONU, classe, grupo de embalagem, rótulos de risco; ONU 0 = não classificado para transporte), ficha de emergência, composição **como publicada na Seção 3** e o link da FISPQ oficial.
+- A ferramenta **documentos_para_baixar** passa a entregar a **FISPQ e a ficha de emergência oficiais** (links do SafetyChem) no lugar das versões antigas da pasta. Os boletins técnicos continuam vindo da pasta.
+- Os textos chegam limpos (sem as marcações `\b`, `\super` e os separadores `#` do SafetyChem).
+
+### Segredo industrial
+
+A exportação traz os ingredientes reais (nome, CAS e concentração) marcados como *segredo industrial*. **Eles são descartados na importação e nunca ficam guardados nem chegam ao agente.** Só ficam os ingredientes não sigilosos e o texto publicado na Seção 3 da FISPQ (ex.: "Segredo industrial 1: 18,75 - 31,25%").
+
+### Configurar no Dify (uma vez)
+
+1. Atualize o esquema da ferramenta **Documentos de produto** (Integrações → Ferramentas → Swagger API as Tool): cole de novo a saída de
+   `curl -s http://127.0.0.1:8090/api/ferramentas/openapi.json | sed 's#http://127.0.0.1:8090#http://10.100.100.13:8090#'`.
+   Aparece a segunda ferramenta, **fispq_safetychem**.
+2. Adicione **fispq_safetychem** no nó Agent dos agentes que respondem sobre segurança e inclua na instrução que ela prevalece sobre as FISPQs do catálogo.
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

@@ -558,6 +558,10 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
   background: var(--superficie); border: 1px solid var(--borda); border-left: 4px solid var(--flex-verde); border-radius: 12px; padding: 12px 14px;
 }
 .cartao-config.pendente { border-left-color: var(--erro); }
+#cartao-safetychem { margin-top: 4px; }
+#btn-sc-importar { white-space: nowrap; flex: none; }
+#cartao-safetychem.pendente { border-left-color: var(--borda); }
+.cartao-config-texto .dica { margin: 4px 0 0; font-size: 12px; }
 .cartao-config-texto { display: flex; flex-direction: column; min-width: 0; font-size: 14px; }
 .cartao-config-texto span { font-size: 13px; }
 .opcoes-conh { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--borda); display: grid; gap: 10px; }
