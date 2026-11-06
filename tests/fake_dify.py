@@ -283,6 +283,23 @@ async def parar(task: str, req: Request):
     return {"result": "success"}
 
 
+async def _resposta_com_documentos(pergunta: str) -> str:
+    """Como o agente de verdade: chama a ferramenta de documentos da plataforma e devolve os link_markdown."""
+    import os
+    import re
+
+    import httpx
+    produto = re.sub(r"(?i).*boletim( do| da)?", "", pergunta).strip(" ?.")
+    async with httpx.AsyncClient(timeout=10) as c:
+        r = await c.get(f"http://127.0.0.1:{os.getenv('APP_PORT', '8088')}/api/ferramentas/documentos-produto",
+                        params={"produto": produto, "tipo": "boletim"},
+                        headers={"Authorization": f"Bearer {os.getenv('DOCUMENTOS_CHAVE', '')}"})
+    docs = r.json().get("documentos", []) if r.status_code == 200 else []
+    if not docs:
+        return f"Não encontrei o boletim de {produto}."
+    return "Aqui está o boletim técnico:\n\n" + "\n".join(f"- {d['link_markdown']}" for d in docs)
+
+
 @app.post("/v1/chat-messages")
 async def chat(req: Request):
     chave, a = _app(req)
@@ -310,6 +327,8 @@ async def chat(req: Request):
     mid, task = str(uuid.uuid4()), str(uuid.uuid4())
     pergunta = b["query"]
     resposta = RESPOSTA_PU if a["ferramentas"] else RESPOSTA_COMERCIAL
+    if a["ferramentas"] and "boletim" in pergunta.lower():
+        resposta = await _resposta_com_documentos(pergunta)
     fontes = ([{"document_name": "BT_FLEXX_AG_2032.pdf", "dataset_name": "Boletins técnicos"},
                {"document_name": "NBR 9178 - Espumas flexíveis.pdf", "dataset_name": "Normas"}]
               if a["ferramentas"] else [])

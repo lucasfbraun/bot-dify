@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import conhecimento, db, dify, ldap_auth, tempo
+from . import conhecimento, db, dify, documentos, ldap_auth, tempo
 from .config import settings
 from .security import (checar_csrf, criar_token, definir_cookie, exigir_admin, limite_login, limpar_cookie,
                        usuario_atual)
@@ -67,6 +67,8 @@ async def _ciclo(_app):
     db.init_db()
     await _migrar_agente_unico()
     conhecimento.retomar()  # envios que ficaram no meio por reinício do container
+    if documentos.ativo():
+        asyncio.create_task(documentos.indice())  # a primeira busca do agente já encontra o índice pronto
     if not db.list_agentes():
         log.warning("Nenhum agente cadastrado: cadastre em Administração > Agentes.")
     if not os.getenv("SECRET_KEY"):
@@ -78,6 +80,7 @@ async def _ciclo(_app):
 app = FastAPI(title=settings.APP_NAME, docs_url=None, redoc_url=None, openapi_url=None,
               dependencies=[Depends(checar_csrf)], lifespan=_ciclo)
 app.include_router(conhecimento.router)
+app.include_router(documentos.router)
 
 
 @app.middleware("http")

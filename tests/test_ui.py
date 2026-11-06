@@ -282,6 +282,20 @@ with sync_playwright() as p:
     checar("tocando de novo", lambda: expect(ouvir).to_have_attribute("aria-label", "Parar leitura"))
     checar("termina sozinho e volta ao normal", lambda: expect(ouvir).to_have_attribute("aria-label", "Ouvir resposta", timeout=10000))
 
+    # ------------------------------------------------------------------ documentos de produto
+    print("== admin: boletim do produto para abrir/baixar")
+    perguntar(adm, "me traga o boletim do AG 2047")
+    doc = adm.locator(".msg-bot .md a.link-doc").first
+    checar("resposta traz o botão do documento", lambda: expect(doc).to_have_text("📄 Boletim FLEXX AG 2047.pdf", timeout=15000))
+    checar("abre em outra aba", lambda: expect(doc).to_have_attribute("target", "_blank"))
+    print_(adm, "17-documento-produto")
+    with adm.context.expect_page() as nova:
+        doc.click()
+    aba = nova.value
+    aba.wait_for_load_state()
+    ok("/api/documentos/" in aba.url, f"PDF abre na nova aba ({aba.url[-50:]})")
+    aba.close()
+
     # ------------------------------------------------------------------ maria
     print("== maria: só o comercial")
     maria = novo()

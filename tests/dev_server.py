@@ -25,6 +25,35 @@ os.environ.setdefault("LDAP_BIND_PASSWORD", "Teste@123")
 os.environ.setdefault("DIFY_API_URL", f"http://127.0.0.1:{DIFY_PORT}/v1")
 os.environ.setdefault("CONVERSOR_URL", f"http://127.0.0.1:{CONVERSOR_PORT}")
 os.environ.setdefault("CONHECIMENTO_INTERVALO_STATUS", "0.2")
+os.environ.setdefault("DOCUMENTOS_CHAVE", "chave-da-ferramenta-de-teste")
+
+
+def _pasta_documentos() -> str:
+    """Imita a pasta da rede: Família / Produto / arquivos, com obsoletos e lixo do Windows para ignorar."""
+    raiz = os.path.join(os.environ["DATA_DIR"], "doc_produto")
+    arquivos = {
+        "FLEXX® AG/FLEXX AG 2047/Boletim FLEXX AG 2047.pdf": b"%PDF-1.4 boletim ag 2047",
+        "FLEXX® AG/FLEXX AG 2047/Boletim FLEXX AG 2047.doc": bytes.fromhex("d0cf11e0") + b" word",
+        "FLEXX® AG/FLEXX AG 2047/FISPQ - FLEXX AG 2047.pdf": b"%PDF-1.4 fispq ag 2047",
+        "FLEXX® AG/FLEXX AG 2047/Obsoletos/Boletim FLEXX AG 2047.pdf": b"%PDF-1.4 antigo",
+        "FLEXX® AG/FLEXX AG 2047/Thumbs.db": b"x",
+        "FLEXX® AG/FLEXX AG 2047/~$oletim FLEXX AG 2047.doc": b"x",
+        "FLEXX® AG/FLEXX AG 2068/FLEXX_AG_2068_Boletim Técnico.pdf": b"%PDF-1.4 boletim ag 2068",
+        "FLEXX® AG/FLEXX AG 2068/FLEXX_AG_2068_FISPQ.docx": b"PK word",
+        "FLEXX® AG/FLEXX AG 2068/Obsoleto/FLEXX_AG_2068_Laboratório.pdf": b"%PDF-1.4 antigo",
+        "FLEXX® AG/FLEXX AG 204600/Sumário do OneNote.onetoc2": b"x",
+        "FLEXX® HR/FLEXX HR 3530/Boletim FLEXX HR 3530.pdf": b"%PDF-1.4 hr",
+        "FLEXX® HR/FLEXX HR 3530/Revisão anterior/Boletim FLEXX HR 3530.pdf": b"%PDF-1.4 antigo",
+    }
+    for rel, dados in arquivos.items():
+        caminho = os.path.join(raiz, *rel.split("/"))
+        os.makedirs(os.path.dirname(caminho), exist_ok=True)
+        with open(caminho, "wb") as f:
+            f.write(dados)
+    return raiz
+
+
+os.environ.setdefault("DOCUMENTOS_DIR", _pasta_documentos())
 
 import uvicorn  # noqa: E402
 from ldap3 import MOCK_SYNC  # noqa: E402

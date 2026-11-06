@@ -164,6 +164,11 @@ if (window.DOMPurify) {
 function renderMarkdown(el, texto, comCursor = false) {
   const html = window.marked ? marked.parse(texto || '', { gfm: true, breaks: true }) : esc(texto);
   el.innerHTML = window.DOMPurify ? DOMPurify.sanitize(html) : esc(texto);
+  // documentos da pasta de produtos (ferramenta do agente): viram botões de abrir/baixar
+  for (const a of el.querySelectorAll('a[href^="/api/documentos/"]')) {
+    a.classList.add('link-doc');
+    a.title = 'Abrir ou baixar';
+  }
   for (const t of el.querySelectorAll('table')) {
     if (!t.parentElement.classList.contains('tabela-wrap')) {
       const w = document.createElement('div');

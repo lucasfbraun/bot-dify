@@ -14,6 +14,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Perguntas por áudio**: o botão de microfone grava a pergunta, o Dify transcreve com o modelo de voz para texto do agente e o texto vai para a caixa, para revisar antes de enviar. O áudio não é guardado.
 - **Anexos no chat**: nos agentes com "Upload de Arquivo" ligado no Dify, o clipe anexa imagens e documentos (ou um print colado) para o agente analisar naquela pergunta. O arquivo vai direto para o Dify e não fica guardado aqui.
 - **Ouvir a resposta**: nos agentes com "Texto para voz" ligado no Dify, o botão 🔊 lê a resposta com a voz do agente, sem ler tabelas nem símbolos de formatação.
+- **Documentos de produto para baixar**: peça "me traga o boletim do AG 2047" e o agente responde com botões para abrir o PDF ou baixar o Word, direto da pasta *Documentação de Produto* da rede (só a versão atual, nunca os obsoletos).
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -348,6 +349,53 @@ Cada leitura gasta créditos do modelo de voz. Por isso há o limite `VOZ_POR_HO
 |---|---|---|
 | `VOZ_MAX_CARACTERES` | `4000` | Quanto da resposta é lido; o resto fica só na tela. |
 | `VOZ_POR_HORA` | `100` | Leituras por pessoa por hora. |
+
+## Documentos de produto (boletim, FISPQ) para abrir ou baixar
+
+Quando alguém pede *"me traga o boletim do AG 2047"*, o agente chama a ferramenta **documentos_para_baixar** da plataforma e responde com um botão para cada arquivo: **📄 Boletim FLEXX AG 2047.pdf**. PDF abre no navegador; Word e Excel baixam.
+
+### O que é entregue
+
+- Os arquivos vêm da pasta da rede `\\10.1.1.205\flexivel\GRUPOS\Qualidade\Documentação de Produto`, organizada como *Família → Produto → arquivos*.
+- **Só a versão atual**: pastas *Obsoleto*, *Obsoletos* e *Revisão anterior* são ignoradas, assim como `Thumbs.db`, arquivos temporários do Office (`~$...`) e do OneNote.
+- Formatos: PDF, DOC, DOCX, XLS, XLSX. O tipo (Boletim técnico, FISPQ, Ficha de emergência, Certificado/análise, Laboratório) é deduzido pelo nome do arquivo.
+- A busca aceita o produto do jeito que a pessoa escreve: "AG 2047", "flexx ag 2047", "FLEXX® AG 2047". Se não achar, a ferramenta devolve produtos parecidos para o agente perguntar se era um deles.
+- A pasta é relida a cada `DOCUMENTOS_INDICE_MIN` minutos (padrão 15). Arquivo novo aparece sozinho.
+
+### Segurança
+
+- A pasta é montada **só para leitura**, no servidor e no container.
+- O agente só recebe nome, tipo e link; nunca o caminho no servidor. O link é uma assinatura do caminho (HMAC com a `SECRET_KEY`), então ninguém consegue montar um link para outro arquivo.
+- O link **só abre para quem está logado** na plataforma. Cada download fica na auditoria (`baixar_documento`).
+- A ferramenta só responde com a chave `DOCUMENTOS_CHAVE`, cadastrada no Dify.
+- **Quem pode pedir documentos é decidido no Dify:** só os agentes em que você adicionar a ferramenta oferecem os arquivos.
+
+### Configurar (uma vez)
+
+1. **No servidor**, a pasta já está montada em `/mnt/doc_produto` (fstab, `cifs`, `ro`). O `docker-compose.yml` a repassa ao container em `/docs/produto`, só leitura. Se o caminho no servidor for outro, defina `DOCUMENTOS_PASTA` no `.env`.
+2. **No `.env`**, crie a chave da ferramenta (gere com `openssl rand -hex 32`):
+   ```
+   DOCUMENTOS_CHAVE=<chave gerada>
+   ```
+   Depois: `git pull && docker compose up -d --build`. Para conferir, no navegador logado como admin, abra `/api/admin/documentos`: deve mostrar quantos arquivos e produtos foram encontrados.
+3. **No Dify**, cadastre a ferramenta: **Ferramentas → Personalizada → Criar ferramenta personalizada**:
+   - **Importar da URL**: `http://<IP do servidor>:8090/api/ferramentas/openapi.json` (a URL tem que ser alcançável pelo container do Dify; se a porta não estiver aberta para a rede, use o endereço HTTPS da plataforma).
+   - **Autenticação**: *Chave de API*, tipo *Bearer*, valor = a `DOCUMENTOS_CHAVE`.
+   - Se o Dify chamar a plataforma por um endereço diferente do usado para importar, defina `DOCUMENTOS_URL_FERRAMENTA` no `.env` com esse endereço.
+4. **No agente** (Agente Técnico e quem mais puder), adicione a ferramenta **documentos_para_baixar** e inclua na instrução:
+   ```
+   Quando o usuário pedir um documento de produto (boletim técnico, FISPQ, ficha de emergência etc.),
+   use a ferramenta documentos_para_baixar e responda com o link_markdown de cada arquivo, exatamente
+   como veio. Nunca invente links.
+   ```
+   **Publique.**
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `DOCUMENTOS_CHAVE` | (vazio) | Chave que o Dify usa para chamar a ferramenta. Vazia = ferramenta desligada. |
+| `DOCUMENTOS_PASTA` | `/mnt/doc_produto` | Pasta no servidor (repassada ao container em `/docs/produto`). |
+| `DOCUMENTOS_INDICE_MIN` | `15` | De quantos em quantos minutos a pasta é relida. |
+| `DOCUMENTOS_URL_FERRAMENTA` | (vazio) | Endereço da plataforma visto pelo Dify, se for diferente do usado para importar. |
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

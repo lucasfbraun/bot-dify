@@ -334,6 +334,13 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 .chip-erro { color: var(--erro); font-size: 12px; max-width: 280px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chip-tirar { border: 0; background: none; cursor: pointer; font-size: 18px; line-height: 1; padding: 0 2px; color: var(--texto-suave); }
 .chip-tirar:hover { color: var(--texto); }
+/* ---------- documentos de produto (links da ferramenta do agente) ---------- */
+.md a.link-doc {
+  display: inline-flex; align-items: center; gap: 4px; margin: 2px 0; padding: 6px 10px; border-radius: 10px;
+  background: var(--superficie); border: 1px solid var(--borda); box-shadow: var(--sombra);
+  color: var(--texto); text-decoration: none; font-weight: 600; overflow-wrap: anywhere;
+}
+.md a.link-doc:hover { border-color: var(--flex-teal-600); }
 /* ---------- ouvir a resposta ---------- */
 .btn-ouvir { display: none; }
 .com-voz .btn-ouvir { display: inline-grid; }

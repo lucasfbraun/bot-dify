@@ -59,6 +59,13 @@ class Settings:
     FUSO_HORARIO = os.getenv("FUSO_HORARIO", "America/Sao_Paulo")   # filtros por data e horários do TXT
     EXPORTAR_MAX_CONVERSAS = int(os.getenv("EXPORTAR_MAX_CONVERSAS", "1000"))
 
+    # Documentação de produto (boletins, FISPQs...): pasta da rede montada só leitura no container.
+    # Vazio = desligado. DOCUMENTOS_CHAVE é a chave que o Dify usa para chamar a ferramenta (sem ela, desligada).
+    DOCUMENTOS_DIR = os.getenv("DOCUMENTOS_DIR", "")
+    DOCUMENTOS_CHAVE = os.getenv("DOCUMENTOS_CHAVE", "")
+    DOCUMENTOS_INDICE_MIN = int(os.getenv("DOCUMENTOS_INDICE_MIN", "15"))  # releitura da pasta (minutos)
+    DOCUMENTOS_URL_FERRAMENTA = os.getenv("DOCUMENTOS_URL_FERRAMENTA", "").rstrip("/")  # URL que o Dify usa
+
     # Proteção de login
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))
     LOGIN_LOCK_MINUTES = int(os.getenv("LOGIN_LOCK_MINUTES", "10"))

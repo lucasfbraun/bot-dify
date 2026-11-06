@@ -302,6 +302,52 @@ ok("media-src 'self' blob:" in anon.get("/").headers["content-security-policy"],
 ok(any(x["evento"] == "ouvir" for x in adm.get("/api/admin/registros", params={"usuario": "admin.ti"}).json()["itens"]),
    "leitura aparece nos registros")
 
+# ------------------------------------------------------------------ documentação de produto
+secao("documentação de produto (ferramenta do agente + download)")
+FERR = "/api/ferramentas/documentos-produto"
+CHAVE_DOCS = {"Authorization": "Bearer chave-da-ferramenta-de-teste"}
+ok(anon.get(FERR, params={"produto": "AG 2047"}).status_code == 401, "ferramenta sem chave -> 401")
+ok(anon.get(FERR, params={"produto": "AG 2047"}, headers={"Authorization": "Bearer errada"}).status_code == 401,
+   "ferramenta com chave errada -> 401")
+r = anon.get(FERR, params={"produto": "AG 2047"}, headers=CHAVE_DOCS)
+docs = r.json()["documentos"]
+ok(r.status_code == 200 and sorted(d["arquivo"] for d in docs) == ["Boletim FLEXX AG 2047.doc", "Boletim FLEXX AG 2047.pdf",
+                                                                  "FISPQ - FLEXX AG 2047.pdf"],
+   f"acha os arquivos atuais do AG 2047, sem obsoletos nem lixo ({[d['arquivo'] for d in docs]})")
+ok({d["tipo"] for d in docs} == {"Boletim técnico", "FISPQ"} and docs[0]["link_markdown"].startswith("[📄 "),
+   "tipo de cada arquivo e link pronto para a resposta")
+ok("relativo" not in docs[0] and "/docs" not in json.dumps(docs), "não expõe o caminho no servidor")
+r = anon.get(FERR, params={"produto": "flexx ag 2068", "tipo": "fispq"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_FISPQ.docx"], "filtra por tipo (nome com _ e sem acento)")
+r = anon.get(FERR, params={"produto": "boletim do AG 2068"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_Boletim Técnico.pdf", "FLEXX_AG_2068_FISPQ.docx"],
+   "ignora palavras como \"boletim do\" no nome do produto")
+r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 0 and "FLEXX AG 2047" in r["produtos_parecidos"], "produto sem documentos: sugere parecidos")
+ok(anon.get(FERR, params={"produto": " "}, headers=CHAVE_DOCS).status_code == 400, "produto vazio -> 400")
+esq = anon.get("/api/ferramentas/openapi.json").json()
+ok(esq["paths"][FERR]["get"]["operationId"] == "documentos_para_baixar" and esq["servers"][0]["url"].startswith("http"),
+   "esquema OpenAPI para importar no Dify")
+
+link = docs[0]["link"] if docs[0]["formato"] == "PDF" else next(d["link"] for d in docs if d["formato"] == "PDF")
+ok(anon.get(link).status_code == 401, "download sem login -> 401")
+r = maria.get(link)
+ok(r.status_code == 200 and r.content.startswith(b"%PDF") and r.headers["content-type"] == "application/pdf"
+   and r.headers["content-disposition"].startswith("inline;"), "PDF abre no navegador para quem está logado")
+word = next(d["link"] for d in docs if d["formato"] == "DOC")
+r = maria.get(word)
+ok(r.status_code == 200 and r.headers["content-disposition"].startswith("attachment;")
+   and "Boletim%20FLEXX%20AG%202047.doc" in r.headers["content-disposition"], "Word baixa com o nome original")
+ok(maria.get("/api/documentos/" + "0" * 32).status_code == 404, "id inexistente -> 404")
+ok(maria.get("/api/documentos/..%2F..%2Fetc%2Fpasswd").status_code == 404, "caminho no lugar do id -> 404")
+st = adm.get("/api/admin/documentos").json()
+ok(st["ativo"] and st["ferramenta"] and st["arquivos"] == 6 and st["produtos"] == 3, f"situação do índice para o admin ({st})")
+ok(maria.get("/api/admin/documentos").status_code == 403, "situação do índice só para admin")
+
+code, eventos = conversar(adm, PU, "me traga o boletim do AG 2047")
+texto = "".join(e["v"] for e in eventos if e["t"] == "texto")
+ok("[📄 Boletim FLEXX AG 2047.pdf](/api/documentos/" in texto, "agente chama a ferramenta e responde com o link")
+
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")
 r = adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM, 9999]})
