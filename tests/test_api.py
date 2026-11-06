@@ -369,7 +369,7 @@ st = adm.get("/api/admin/safetychem").json()
 ok(st["produtos"] == 2 and st["ultima_importacao"]["atualizados"] == 1 and st["ultima_importacao"]["por"] == "admin.ti",
    "situação da importação para o admin")
 
-FISPQ = "/api/ferramentas/fispq-safetychem"
+FISPQ = "/api/ferramentas/fds-safetychem"
 ok(anon.get(FISPQ, params={"produto": "AG 2032"}).status_code == 401, "ferramenta da FISPQ sem chave -> 401")
 r = anon.get(FISPQ, params={"produto": "ag 2032"}, headers=CHAVE_DOCS)
 fq = r.json()
@@ -409,7 +409,7 @@ ok([d["arquivo"] for d in r["documentos"]] == ["FDS FLEXX AG 2047 (SafetyChem, v
 r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 1 and r["documentos"][0]["fonte"].startswith("SafetyChem"), "produto só no SafetyChem: entrega a FISPQ oficial")
 esq = anon.get("/api/ferramentas/openapi.json").json()
-ok(esq["paths"][FISPQ]["get"]["operationId"] == "fispq_safetychem", "esquema OpenAPI inclui a ferramenta da FISPQ")
+ok(esq["paths"][FISPQ]["get"]["operationId"] == "fds_safetychem", "esquema OpenAPI inclui a ferramenta da FDS")
 
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")

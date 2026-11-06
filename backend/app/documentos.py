@@ -235,8 +235,8 @@ async def ferramenta_openapi(request: Request):
                  "description": "Opcional: boletim, fispq, ficha de emergencia, certificado. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentos encontrados"}},
-        }}, "/api/ferramentas/fispq-safetychem": {"get": {
-            "operationId": "fispq_safetychem",
+        }}, "/api/ferramentas/fds-safetychem": {"get": {
+            "operationId": "fds_safetychem",
             "summary": "Dados da FISPQ/FDS OFICIAL e atualizada do produto (SafetyChem/Intertox): classificação, "
                        "pictogramas, frases de perigo e de precaução, EPI, primeiros socorros, combate a incêndio, "
                        "vazamento, manuseio, transporte (ONU, classe), ficha de emergência e composição publicada "

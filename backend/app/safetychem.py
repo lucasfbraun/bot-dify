@@ -7,7 +7,7 @@ aqui, ele PREVALECE sobre as FISPQs antigas da pasta de documentos e do catálog
   Reimportar atualiza os produtos alterados e inclui os novos, sem duplicar (chave = nome comercial).
 - SEGREDO INDUSTRIAL: os ingredientes marcados como segredo industrial (nome, CAS e concentração reais) são
   descartados na importação e nunca ficam guardados. A composição que fica é a da Seção 3 publicada na FISPQ.
-- O agente consulta pela ferramenta GET /api/ferramentas/fispq-safetychem (mesma chave DOCUMENTOS_CHAVE).
+- O agente consulta pela ferramenta GET /api/ferramentas/fds-safetychem (mesma chave DOCUMENTOS_CHAVE).
 """
 import json
 import logging
@@ -316,7 +316,7 @@ def situacao(admin: dict = Depends(exigir_admin)):
 
 
 # ------------------------------------------------------------------ ferramenta para o agente (Dify)
-@router.get("/api/ferramentas/fispq-safetychem")
+@router.get("/api/ferramentas/fds-safetychem")
 async def ferramenta_fispq(request: Request, produto: str = ""):
     """Dados da FISPQ/FDS oficial e atualizada do produto (SafetyChem). Prevalece sobre FISPQs antigas."""
     documentos._checar_chave(request)
