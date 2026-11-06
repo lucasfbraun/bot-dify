@@ -262,7 +262,9 @@ def buscar(produto: str) -> list[dict]:
 
 
 def _rotulo_fispq(p: dict) -> str:
-    return f"FISPQ {p['nome']} (SafetyChem" + (f", versão {p['versao']}" if p.get("versao") else "") + ")"
+    # o SafetyChem exporta o modelo novo (FDS, ABNT NBR 14725:2023): "FISPQ" no título faria o agente tratá-lo
+    # como documento antigo
+    return f"FDS {p['nome']} (SafetyChem" + (f", versão {p['versao']}" if p.get("versao") else "") + ")"
 
 
 def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
@@ -271,11 +273,12 @@ def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
     out = []
     for i in buscar(produto):
         p = i["_dados"]
-        candidatos = [("FISPQ", p.get("url_fispq"), _rotulo_fispq(p)),
-                      ("Ficha de emergência", p.get("url_ficha_emergencia"),
+        # (tipo da pasta que ele substitui, palavras aceitas no filtro, link, texto)
+        candidatos = [("FISPQ", "fispq fds sds", p.get("url_fispq"), _rotulo_fispq(p)),
+                      ("Ficha de emergência", "ficha de emergencia", p.get("url_ficha_emergencia"),
                        f"Ficha de emergência {p['nome']} (SafetyChem)")]
-        for rotulo_tipo, url, texto in candidatos:
-            if not url or (tipo_n and tipo_n not in documentos.normalizar(rotulo_tipo)):
+        for rotulo_tipo, aceitos, url, texto in candidatos:
+            if not url or (tipo_n and tipo_n not in aceitos):
                 continue
             out.append({"produto": p["nome"], "familia": "SafetyChem (oficial)", "tipo": rotulo_tipo,
                         "arquivo": texto, "formato": "PDF", "link": url, "fonte": "SafetyChem (oficial, atualizada)",
@@ -324,8 +327,8 @@ async def ferramenta_fispq(request: Request, produto: str = ""):
     if not achados:
         sugestoes = documentos.parecidos(_itens_busca(), produto)
         return {"encontrados": 0, "produtos": [], "produtos_parecidos": sugestoes,
-                "orientacao": "Este produto não está no SafetyChem. Use a FISPQ do catálogo, avisando que pode estar "
-                              "desatualizada." + (" Ou pergunte se o usuário quis dizer um destes produtos."
+                "orientacao": "Este produto não está no SafetyChem. Use a FISPQ/FDS do catálogo, avisando que pode "
+                              "estar desatualizada." + (" Ou pergunte se o usuário quis dizer um destes produtos."
                                                   if sugestoes else "")}
     produtos = []
     for i in achados:
@@ -335,7 +338,9 @@ async def ferramenta_fispq(request: Request, produto: str = ""):
             p["link_markdown_fispq"] = f"[📄 {_rotulo_fispq(p)}]({p['url_fispq']})"
         produtos.append(p)
     return {"encontrados": len(produtos), "produtos": produtos,
-            "orientacao": "Fonte OFICIAL e atualizada (SafetyChem). Prevalece sobre boletins/FISPQs antigos do "
-                          "catálogo e da pasta: em caso de diferença, use esta e avise que o documento antigo está "
-                          "desatualizado. Cite \"FISPQ SafetyChem, versão <versao>\". Para o usuário abrir o "
+            "orientacao": "FDS OFICIAL e atualizada (SafetyChem, modelo ABNT NBR 14725:2023). Prevalece sobre as "
+                          "FISPQs/FDS antigas do catálogo e da pasta: em caso de diferença, use esta e avise que o "
+                          "documento antigo está desatualizado. Não vale para boletins técnicos (aplicação e "
+                          "propriedades de uso continuam vindo do boletim). Cite \"FDS SafetyChem, versão <versao>\". "
+                          "Para o usuário abrir o "
                           "documento, use o link_markdown_fispq exatamente como veio."}

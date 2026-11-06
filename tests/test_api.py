@@ -388,7 +388,7 @@ ok(p32["transporte"]["classificado_para_transporte"] is False and p32["transport
 ok("Segredo industrial 1: 18,75 - 31,25%" in p32["composicao_secao3_publicada"], "composição como publicada na Seção 3")
 ok("SECRETO" not in r.text and "11111-11-1" not in r.text and "22222-22-2" not in r.text and p32["ingredientes_publicos"] == [],
    "ingredientes em segredo industrial NUNCA saem")
-ok(p32["link_markdown_fispq"] == "[📄 FISPQ FLEXX AG 2032 (SafetyChem, versão 05)](https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032)",
+ok(p32["link_markdown_fispq"] == "[📄 FDS FLEXX AG 2032 (SafetyChem, versão 05)](https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032)",
    "link da FISPQ oficial pronto para a resposta")
 p47 = anon.get(FISPQ, params={"produto": "FLEXX® AG 2047"}, headers=CHAVE_DOCS).json()["produtos"][0]
 ok(p47["transporte"]["numero_onu"] == "2810" and p47["transporte"]["rotulos_risco"] == ["Classe 6.1 - Tóxico"]
@@ -398,12 +398,14 @@ r = anon.get(FISPQ, params={"produto": "HR 3530"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 0 and "catálogo" in r["orientacao"], "produto fora do SafetyChem: orienta usar a FISPQ antiga com aviso")
 r = anon.get(FERR, params={"produto": "AG 2047"}, headers=CHAVE_DOCS).json()
 arqs = [(d["tipo"], d["arquivo"]) for d in r["documentos"]]
-ok(("FISPQ", "FISPQ FLEXX AG 2047 (SafetyChem, versão 02)") in arqs and ("Ficha de emergência", "Ficha de emergência FLEXX AG 2047 (SafetyChem)") in arqs
+ok(("FISPQ", "FDS FLEXX AG 2047 (SafetyChem, versão 02)") in arqs and ("Ficha de emergência", "Ficha de emergência FLEXX AG 2047 (SafetyChem)") in arqs
    and not any(a == "FISPQ - FLEXX AG 2047.pdf" for _, a in arqs) and ("Boletim técnico", "Boletim FLEXX AG 2047.pdf") in arqs,
    f"documentos: FISPQ antiga da pasta sai, entra a oficial; boletins continuam ({arqs})")
 r = anon.get(FERR, params={"produto": "AG 2047", "tipo": "fispq"}, headers=CHAVE_DOCS).json()
 ok([d["link"] for d in r["documentos"]] == ["https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002047"],
    "pedindo só a FISPQ: vem só a oficial")
+r = anon.get(FERR, params={"produto": "AG 2047", "tipo": "fds"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["FDS FLEXX AG 2047 (SafetyChem, versão 02)"], "pedindo \"FDS\": também vem a oficial")
 r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 1 and r["documentos"][0]["fonte"].startswith("SafetyChem"), "produto só no SafetyChem: entrega a FISPQ oficial")
 esq = anon.get("/api/ferramentas/openapi.json").json()
