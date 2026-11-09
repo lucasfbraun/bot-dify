@@ -16,6 +16,7 @@ Frontend próprio (PWA) para os agentes de conversa do Dify, com a identidade vi
 - **Ouvir a resposta**: nos agentes com "Texto para voz" ligado no Dify, o botão 🔊 lê a resposta com a voz do agente, sem ler tabelas nem símbolos de formatação.
 - **Documentos de produto para baixar**: peça "me traga o boletim do AG 2047" e o agente responde com botões para abrir o PDF ou baixar o Word, direto da pasta *Documentação de Produto* da rede (só a versão atual, nunca os obsoletos).
 - **FISPQs oficiais do SafetyChem (Intertox)**: o admin importa o XML exportado do SafetyChem e o agente passa a usar a FISPQ oficial e atualizada (perigos, precauções, EPI, transporte, emergência), que prevalece sobre as FISPQs antigas. Ingredientes em segredo industrial são descartados na importação.
+- **Atalhos pessoais**: cada pessoa cria os próprios cards de pergunta na tela inicial, por agente (com lacunas como `[produto]` para completar na hora), e pode ocultar as sugestões padrão.
 - **Celular**: layout responsivo, instalável como app (PWA). A tela de login mostra um card para instalar (Android: botão *Instalar*; iPhone: instrução *Compartilhar → Adicionar à Tela de Início*).
 - **Segurança**: as chaves de API do Dify ficam só no servidor (no banco local) e nunca vão para o navegador. A tela de administração mostra só o começo e o fim da chave. A sessão usa cookie HttpOnly + SameSite=Strict. Há proteção CSRF, CSP restritiva e bloqueio após 5 senhas erradas (10 min).
 
@@ -274,6 +275,15 @@ Agentes sem o recurso ligado não mostram o microfone. Se o modelo de voz para t
 - O servidor confere se a pessoa tem acesso ao agente e se o arquivo está dentro do limite (`AUDIO_MAX_MB`, padrão 12 MB), repassa para `/v1/audio-to-text` do Dify com a chave do agente e devolve só o texto. **O áudio não fica guardado** em lugar nenhum desta aplicação.
 - A gravação só funciona com **HTTPS** (exigência dos navegadores para usar o microfone).
 - O nginx precisa aceitar o tamanho do áudio: `client_max_body_size 12m` (já está em `deploy/nginx-agente.conf`). Com o limite antigo de 1 MB, áudios com mais de uns 30 segundos são recusados e a pessoa vê *"O servidor recusou o áudio por tamanho"*.
+
+## Atalhos pessoais (cards da tela inicial)
+
+Além das sugestões padrão do agente (as perguntas sugeridas do Dify ou as cadastradas pelo admin no agente), **cada pessoa monta os próprios cards**, com as perguntas do dia a dia dela.
+
+- Na tela inicial do chat, **Personalizar atalhos** abre a janela **Meus atalhos** daquele agente: criar (categoria opcional + pergunta), editar, apagar e reordenar (↑ ↓).
+- Os atalhos da pessoa aparecem **primeiro**, com uma faixa verde; depois vêm as sugestões padrão. Marcando **Ocultar as sugestões padrão do agente**, ficam só os dela.
+- **Lacunas**: texto entre colchetes vira lacuna. Um card *"Tudo sobre o produto [produto]"* não é enviado direto: o texto vai para a caixa com `[produto]` selecionado, e a pessoa só digita o nome e envia. Sem colchetes, o clique envia a pergunta na hora.
+- São **pessoais**: só a própria pessoa vê e mexe nos seus atalhos, e só nos agentes liberados para ela. Até 12 por agente. Usuário ou agente removido leva os atalhos junto.
 
 ## Anexos no chat
 

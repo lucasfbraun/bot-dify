@@ -125,6 +125,23 @@ CREATE TABLE IF NOT EXISTS eventos_conhecimento (
     detalhe    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_eventos_conh_quando ON eventos_conhecimento(quando);
+-- atalhos pessoais (cards de pergunta) de cada pessoa em cada agente
+CREATE TABLE IF NOT EXISTS usuario_atalhos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    username   TEXT NOT NULL REFERENCES usuarios(username) ON DELETE CASCADE,
+    agente_id  INTEGER NOT NULL REFERENCES agentes(id) ON DELETE CASCADE,
+    categoria  TEXT,
+    texto      TEXT NOT NULL,
+    ordem      INTEGER NOT NULL DEFAULT 0,
+    criado_em  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_atalhos_usuario ON usuario_atalhos(username, agente_id);
+CREATE TABLE IF NOT EXISTS usuario_preferencias (
+    username        TEXT NOT NULL REFERENCES usuarios(username) ON DELETE CASCADE,
+    agente_id       INTEGER NOT NULL REFERENCES agentes(id) ON DELETE CASCADE,
+    ocultar_padrao  INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (username, agente_id)
+);
 -- fichas técnicas (PDF publicado no SafetyChem): só a versão mais recente de cada produto
 CREATE TABLE IF NOT EXISTS safetychem_fichas (
     chave          TEXT PRIMARY KEY,

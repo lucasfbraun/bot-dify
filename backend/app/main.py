@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from . import conhecimento, db, dify, documentos, ldap_auth, safetychem, tempo
+from . import atalhos, conhecimento, db, dify, documentos, ldap_auth, safetychem, tempo
 from .config import settings
 from .security import (checar_csrf, criar_token, definir_cookie, exigir_admin, limite_login, limpar_cookie,
                        usuario_atual)
@@ -83,6 +83,7 @@ app = FastAPI(title=settings.APP_NAME, docs_url=None, redoc_url=None, openapi_ur
 app.include_router(conhecimento.router)
 app.include_router(documentos.router)
 app.include_router(safetychem.router)
+app.include_router(atalhos.router)
 
 
 @app.middleware("http")

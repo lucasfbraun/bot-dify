@@ -471,6 +471,8 @@ function selecionarAgente(a, { manterConversa = false } = {}) {
   atualizarURL();
   desenharConversas();
   carregarInfo();
+  estado.atalhos = null;
+  carregarAtalhos();
   return carregarConversas();
 }
 
@@ -555,19 +557,140 @@ function desenharAbertura() {
 
 function desenharSugestoes() {
   const box = $('#sugestoes', boasVindas);
-  const lista = (estado.info?.sugestoes || []).filter((s) => s && s.txt);
+  const meus = (estado.atalhos?.itens || []).map((s) => ({ ...s, meu: true }));
+  const padrao = estado.atalhos?.ocultar_padrao ? [] : (estado.info?.sugestoes || []).filter((s) => s && s.txt).slice(0, 6);
   box.innerHTML = '';
-  for (const s of lista.slice(0, 6)) {
+  for (const s of [...meus, ...padrao]) {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'sugestao';
+    b.className = `sugestao${s.meu ? ' minha' : ''}`;
     b.innerHTML = `${s.cat ? `<b>${esc(s.cat)}</b>` : ''}${esc(s.txt)}`;
-    b.addEventListener('click', () => {
-      $('#pergunta').value = s.txt;
-      ajustarAltura();
-      enviarPergunta();
-    });
+    if (s.meu) b.title = 'Meu atalho';
+    b.addEventListener('click', () => usarAtalho(s.txt));
     box.appendChild(b);
+  }
+  $('#btn-atalhos', boasVindas).hidden = !estado.agenteAtual || !estado.atalhos;
+}
+
+/* Card com lacuna ("Tudo sobre o produto [produto]"): vai para a caixa com a lacuna selecionada, para completar.
+   Sem lacuna: envia direto. */
+function usarAtalho(texto) {
+  const ta = $('#pergunta');
+  ta.value = texto;
+  ajustarAltura();
+  const m = /\[[^\]]*\]/.exec(texto);
+  if (!m) { enviarPergunta(); return; }
+  ta.focus();
+  ta.setSelectionRange(m.index, m.index + m[0].length);
+}
+
+/* ---- atalhos pessoais ---- */
+async function carregarAtalhos() {
+  const a = estado.agenteAtual;
+  if (!a) return;
+  let r = null;
+  try {
+    r = await getJSON(rota('/atalhos', a.id));
+  } catch { /* sem atalhos: ficam só as sugestões padrão */ }
+  if (estado.agenteAtual?.id !== a.id) return;
+  estado.atalhos = r;
+  desenharSugestoes();
+}
+
+let atalhoEditando = null;
+function desenharListaAtalhos() {
+  const lista = $('#atalhos-lista');
+  const itens = estado.atalhos?.itens || [];
+  lista.innerHTML = itens.length ? '' : '<p class="muted">Você ainda não tem atalhos neste agente.</p>';
+  itens.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'atalho-linha';
+    d.innerHTML = `<div class="info">${s.cat ? `<b>${esc(s.cat)}</b>` : ''}<span></span></div>
+      <button class="btn-icone" data-a="subir" aria-label="Subir" title="Subir"${i === 0 ? ' disabled' : ''}>↑</button>
+      <button class="btn-icone" data-a="descer" aria-label="Descer" title="Descer"${i === itens.length - 1 ? ' disabled' : ''}>↓</button>
+      <button class="btn-icone" data-a="editar" aria-label="Editar" title="Editar">${ICONE.editar}</button>
+      <button class="btn-icone" data-a="apagar" aria-label="Apagar" title="Apagar">${ICONE.lixo}</button>`;
+    $('.info span', d).textContent = s.txt;
+    d.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button');
+      if (b) acaoAtalho(b.dataset.a, s, i);
+    });
+    lista.appendChild(d);
+  });
+  const cheio = itens.length >= (estado.atalhos?.maximo || 12);
+  $('#atalho-salvar').disabled = cheio && !atalhoEditando;
+  $('#atalhos-ocultar').checked = !!estado.atalhos?.ocultar_padrao;
+}
+
+function limparFormAtalho() {
+  atalhoEditando = null;
+  $('#atalho-categoria').value = '';
+  $('#atalho-texto').value = '';
+  $('#atalho-erro').hidden = true;
+  $('#atalho-form-titulo').textContent = 'Novo atalho';
+  $('#atalho-salvar').textContent = 'Adicionar atalho';
+  $('#atalho-cancelar').hidden = true;
+}
+
+function abrirAtalhos() {
+  if (!estado.agenteAtual) return;
+  $('#atalhos-agente').textContent = `· ${estado.agenteAtual.nome}`;
+  limparFormAtalho();
+  desenharListaAtalhos();
+  $('#dlg-atalhos').showModal();
+}
+
+async function gravarAtalhos(promessa) {
+  try {
+    estado.atalhos = await promessa;
+    desenharListaAtalhos();
+    desenharSugestoes();
+    return true;
+  } catch (e) {
+    toast(e.message, 5000);
+    return false;
+  }
+}
+
+async function acaoAtalho(acao, s, i) {
+  const aid = estado.agenteAtual.id;
+  const itens = estado.atalhos.itens;
+  if (acao === 'editar') {
+    atalhoEditando = s.id;
+    $('#atalho-categoria').value = s.cat;
+    $('#atalho-texto').value = s.txt;
+    $('#atalho-form-titulo').textContent = 'Editar atalho';
+    $('#atalho-salvar').textContent = 'Salvar alterações';
+    $('#atalho-cancelar').hidden = false;
+    $('#atalho-salvar').disabled = false;
+    $('#atalho-texto').focus();
+  } else if (acao === 'apagar') {
+    const ok = await confirmar({ titulo: 'Apagar atalho?', texto: `"${s.txt}"`, ok: 'Apagar' });
+    if (ok === null) return;
+    if (atalhoEditando === s.id) limparFormAtalho();
+    gravarAtalhos(api(rota(`/atalhos/${s.id}`, aid), { metodo: 'DELETE' }).then((r) => r.json()));
+  } else {
+    const ids = itens.map((x) => x.id);
+    const j = acao === 'subir' ? i - 1 : i + 1;
+    [ids[i], ids[j]] = [ids[j], ids[i]];
+    gravarAtalhos(enviarJSON(rota('/atalhos/ordem', aid), 'PUT', { ids }));
+  }
+}
+
+async function salvarAtalho(e) {
+  e.preventDefault();
+  const erro = $('#atalho-erro');
+  const corpo = { categoria: $('#atalho-categoria').value.trim(), texto: $('#atalho-texto').value.trim() };
+  erro.hidden = true;
+  if (corpo.texto.length < 3) { erro.textContent = 'Escreva a pergunta do atalho.'; erro.hidden = false; return; }
+  const aid = estado.agenteAtual.id;
+  const ok = await gravarAtalhos(atalhoEditando
+    ? enviarJSON(rota(`/atalhos/${atalhoEditando}`, aid), 'PUT', corpo)
+    : enviarJSON(rota('/atalhos', aid), 'POST', corpo));
+  if (ok) {
+    toast(atalhoEditando ? 'Atalho alterado.' : 'Atalho criado: ele já aparece na tela inicial.');
+    limparFormAtalho();
+    desenharListaAtalhos();
   }
 }
 
@@ -2975,6 +3098,12 @@ function ligarEventos() {
   });
   $('#form-base').addEventListener('submit', salvarBase);
   $('#form-correcao').addEventListener('submit', enviarCorrecao);
+  $('#btn-atalhos').addEventListener('click', abrirAtalhos);
+  $('#form-atalho').addEventListener('submit', salvarAtalho);
+  $('#atalho-cancelar').addEventListener('click', () => { limparFormAtalho(); desenharListaAtalhos(); });
+  $('#atalhos-fechar').addEventListener('click', () => $('#dlg-atalhos').close());
+  $('#atalhos-ocultar').addEventListener('change', (e) => gravarAtalhos(
+    enviarJSON(rota('/atalhos/preferencias', estado.agenteAtual.id), 'PUT', { ocultar_padrao: e.target.checked })));
   $('#menu-tema').addEventListener('click', alternarTema);
   $('#menu-sair').addEventListener('click', sair);
 

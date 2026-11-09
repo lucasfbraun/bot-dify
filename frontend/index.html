@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=16">
+  <link rel="stylesheet" href="/assets/app.css?v=17">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -112,6 +112,10 @@
             <div class="agentes-rapidos" id="agentes-rapidos" hidden></div>
             <p id="abertura">Sou o especialista em poliuretano do Grupo Flexível. Pergunte sobre produtos, formulações, inspeções, reclamações, custos, compras, desenvolvimento e normas.</p>
             <div class="sugestoes" id="sugestoes"></div>
+            <button class="btn-link" id="btn-atalhos" type="button" hidden>
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17.3V21h3.7l11-11-3.7-3.7zM20.7 7a1 1 0 000-1.4l-2.3-2.3a1 1 0 00-1.4 0l-1.8 1.8 3.7 3.7z"/></svg>
+              Personalizar atalhos
+            </button>
           </div>
         </div>
         <form class="compositor" id="form-chat">
@@ -463,6 +467,31 @@
     </form>
   </dialog>
 
+  <!-- modal: atalhos pessoais (cards de pergunta) -->
+  <dialog id="dlg-atalhos" class="dialogo dialogo-largo">
+    <div class="dialogo-corpo">
+      <h3>Meus atalhos <span class="muted" id="atalhos-agente"></span></h3>
+      <p class="muted dica">Crie cards com as perguntas que você mais usa neste agente. Eles aparecem primeiro na tela inicial e só você os vê. Use <b>[colchetes]</b> para deixar uma lacuna: em <i>"Tudo sobre o produto [produto]"</i>, o clique coloca o texto na caixa com a lacuna selecionada, e você só digita o nome.</p>
+      <div id="atalhos-lista" class="atalhos-lista"></div>
+      <form id="form-atalho" class="form-atalho" novalidate>
+        <h4 id="atalho-form-titulo">Novo atalho</h4>
+        <label for="atalho-categoria">Categoria (opcional)</label>
+        <input id="atalho-categoria" maxlength="40" placeholder="Ex.: Qualidade">
+        <label for="atalho-texto">Pergunta</label>
+        <textarea id="atalho-texto" rows="3" maxlength="1000" placeholder="Ex.: Quais as reclamações do produto [produto] nos últimos 12 meses?"></textarea>
+        <p id="atalho-erro" class="erro" role="alert" hidden></p>
+        <div class="dialogo-acoes">
+          <button class="btn btn-texto" type="button" id="atalho-cancelar" hidden>Cancelar edição</button>
+          <button class="btn btn-primario" type="submit" id="atalho-salvar">Adicionar atalho</button>
+        </div>
+      </form>
+      <label class="chave"><input type="checkbox" id="atalhos-ocultar"><span>Ocultar as sugestões padrão do agente (mostrar só os meus atalhos)</span></label>
+      <div class="dialogo-acoes">
+        <button class="btn btn-texto" type="button" id="atalhos-fechar">Fechar</button>
+      </div>
+    </div>
+  </dialog>
+
   <!-- modal: adicionar base de conhecimento -->
   <dialog id="dlg-base" class="dialogo">
     <form method="dialog" class="dialogo-corpo" id="form-base" novalidate>
@@ -516,6 +545,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=16" type="module"></script>
+  <script src="/assets/app.js?v=17" type="module"></script>
 </body>
 </html>

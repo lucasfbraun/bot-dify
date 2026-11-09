@@ -249,6 +249,22 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
   font: inherit; font-size: 14px; color: var(--texto); cursor: pointer; text-align: left; transition: border-color .15s, background .15s;
 }
 .sugestao:hover { border-color: var(--flex-teal-600); background: var(--superficie-2); }
+.sugestao.minha { border-left: 3px solid var(--flex-verde); }
+.btn-link {
+  display: inline-flex; align-items: center; gap: 6px; margin: 12px auto 0; padding: 6px 10px; border: 0; border-radius: 8px;
+  background: none; color: var(--texto-suave); font: inherit; font-size: 13px; cursor: pointer;
+}
+.btn-link svg { width: 15px; height: 15px; fill: currentColor; }
+.btn-link:hover { color: var(--texto); background: rgba(127, 127, 127, .1); }
+.atalhos-lista { display: grid; gap: 6px; margin: 4px 0 14px; max-height: 300px; overflow-y: auto; }
+.atalho-linha { display: flex; align-items: center; gap: 2px; padding: 6px 6px 6px 12px; border: 1px solid var(--borda); border-radius: 10px; background: var(--superficie); }
+.atalho-linha .info { flex: 1; min-width: 0; font-size: 14px; }
+.atalho-linha .info b { display: block; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--flex-teal-700); }
+.atalho-linha .info span { display: block; overflow-wrap: anywhere; }
+.atalho-linha .btn-icone { width: 34px; height: 34px; color: var(--texto-suave); flex: none; }
+.atalho-linha .btn-icone:disabled { opacity: .3; cursor: default; }
+.form-atalho { border-top: 1px solid var(--borda); padding-top: 10px; margin-bottom: 10px; }
+.form-atalho h4 { margin: 0 0 6px; font-size: 15px; }
 .sugestao b { display: block; color: var(--flex-teal-700); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px; }
 :root[data-tema="escuro"] .sugestao b { color: var(--flex-teal-300); }
 

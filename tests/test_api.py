@@ -561,6 +561,36 @@ httpx.post(f"{SC}/teste/senha", json={"senha": "senha-teste"})
 esq = anon.get("/api/ferramentas/openapi.json").json()
 ok(esq["paths"][FISPQ]["get"]["operationId"] == "dados_oficiais_safetychem", "esquema OpenAPI inclui a ferramenta do SafetyChem")
 
+# ------------------------------------------------------------------ atalhos pessoais
+secao("atalhos pessoais (cards da tela inicial)")
+AT = f"/api/agentes/{COM}/atalhos"
+r = maria.get(AT).json()
+ok(r == {"itens": [], "ocultar_padrao": False, "maximo": 12}, "começa sem atalhos")
+ok(maria.get(f"/api/agentes/{PU}/atalhos").status_code == 403, "agente não liberado -> 403")
+ok(anon.get(AT).status_code == 401, "sem sessão -> 401")
+ok(httpx.post(f"{B}{AT}", json={"texto": "x"}, cookies=maria.cookies).status_code == 403, "sem cabeçalho CSRF -> 403")
+ok(maria.post(AT, json={"texto": "  "}).status_code in (400, 422), "texto vazio -> recusado")
+r = maria.post(AT, json={"categoria": "Qualidade", "texto": "Reclamações do produto [produto] nos últimos 12 meses"}).json()
+ok([(x["cat"], x["txt"]) for x in r["itens"]] == [("Qualidade", "Reclamações do produto [produto] nos últimos 12 meses")], "cria atalho com categoria")
+r = maria.post(AT, json={"texto": "Quais espumas temos\u0007 para colchões?"}).json()
+a1, a2 = r["itens"][0]["id"], r["itens"][1]["id"]
+ok(r["itens"][1] == {"id": a2, "cat": "", "txt": "Quais espumas temos para colchões?"}, "sem categoria; caracteres de controle removidos")
+r = maria.put(f"{AT}/ordem", json={"ids": [a2, a1]}).json()
+ok([x["id"] for x in r["itens"]] == [a2, a1], "reordena")
+ok(maria.put(f"{AT}/ordem", json={"ids": [a2]}).status_code == 400, "reordenar exige todos os atalhos")
+r = maria.put(f"{AT}/{a1}", json={"categoria": "Qualidade", "texto": "NCs do produto [produto]"}).json()
+ok(next(x for x in r["itens"] if x["id"] == a1)["txt"] == "NCs do produto [produto]", "edita")
+r = maria.put(f"{AT}/preferencias", json={"ocultar_padrao": True}).json()
+ok(r["ocultar_padrao"] is True and maria.get(AT).json()["ocultar_padrao"] is True, "oculta as sugestões padrão (fica gravado)")
+ok(adm.get(AT).json()["itens"] == [] and adm.get(AT).json()["ocultar_padrao"] is False, "cada pessoa tem os seus (admin não vê os da maria)")
+ok(adm.put(f"{AT}/{a1}", json={"texto": "invadido"}).status_code == 404, "não edita atalho de outra pessoa")
+ok(adm.delete(f"{AT}/{a1}").status_code == 404, "não apaga atalho de outra pessoa")
+ok(maria.delete(f"{AT}/{a2}").json()["itens"][0]["id"] == a1, "apaga")
+for i in range(11):
+    maria.post(AT, json={"texto": f"Pergunta número {i}"})
+r = maria.post(AT, json={"texto": "Uma a mais"})
+ok(r.status_code == 400 and "12 atalhos" in r.json()["detail"], "limite de 12 por agente")
+
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")
 r = adm.put("/api/admin/usuarios/maria.silva/agentes", json={"agentes": [PU, COM, 9999]})
