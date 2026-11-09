@@ -2524,6 +2524,7 @@ async function carregarSafetychem() {
       ? `Fichas técnicas: ${s.fichas} produto${s.fichas === 1 ? '' : 's'}`
         + (uf ? ` · último envio em ${dataHora(uf.quando)} por ${uf.por} (${uf.produto}, versão ${uf.versao}: ${RESULTADO_FICHA[uf.resultado] || uf.resultado})` : '')
       : 'Fichas técnicas: nenhuma importada ainda (o agente usa os boletins antigos da pasta).';
+    if (s.fds_pdf || s.sds) $('#sc-status-fichas').textContent += ` · FDS (PDF): ${s.fds_pdf} · SDS (inglês): ${s.sds}`;
     $('#cartao-safetychem').classList.toggle('pendente', !s.produtos && !s.fichas);
     carregarSincronizacao();
   } catch (e) {
@@ -2532,6 +2533,7 @@ async function carregarSafetychem() {
 }
 
 let timerSinc = null;
+let situacaoSincAnterior = null;
 async function carregarSincronizacao() {
   clearTimeout(timerSinc);
   let s;
@@ -2539,6 +2541,13 @@ async function carregarSincronizacao() {
     s = await getJSON('/api/admin/safetychem/sincronizacao');
   } catch (e) {
     $('#sc-status-sinc').textContent = e.message;
+    return;
+  }
+  // acabou de terminar: recarrega as contagens de fichas, FDS e SDS (que foram lidas ainda durante a sincronização)
+  const terminou = situacaoSincAnterior === 'rodando' && s.situacao !== 'rodando';
+  situacaoSincAnterior = s.situacao;
+  if (terminou) {
+    carregarSafetychem();
     return;
   }
   const btn = $('#btn-sc-sinc');
@@ -2556,7 +2565,11 @@ async function carregarSincronizacao() {
     txt += ` · última em ${dataHora(s.fim)}: ERRO — ${s.mensagem || ''}`;
   } else if (s.situacao) {
     txt += ` · última em ${dataHora(s.fim)}: ${s.listadas} no SafetyChem, ${s.novas} novas, ${s.atualizadas} atualizadas, ${s.sem_alteracao} sem alteração`
-      + (s.erros?.length ? `, ${s.erros.length} com erro (${s.erros.slice(0, 2).join('; ')})` : '');
+      + (s.erros?.length ? `, ${s.total_erros || s.erros.length} com erro (${s.erros.slice(0, 2).join('; ')})` : '');
+    if (s.por_tipo) {
+      const nomes = { ficha_tecnica: 'fichas técnicas', fds: 'FDS', sds: 'SDS' };
+      txt += ' — ' + Object.entries(s.por_tipo).map(([t, v]) => `${nomes[t] || t}: ${v.listadas} (${v.novas} novas, ${v.atualizadas} atualizadas)`).join(' · ');
+    }
   }
   $('#sc-status-sinc').textContent = txt;
   btn.disabled = s.situacao === 'rodando';
@@ -2566,6 +2579,7 @@ async function carregarSincronizacao() {
 async function sincronizarAgora() {
   try {
     await enviarJSON('/api/admin/safetychem/sincronizar', 'POST', {});
+    situacaoSincAnterior = 'rodando';  // mesmo que termine antes da próxima consulta, as contagens são recarregadas
     toast('Sincronização iniciada. Na primeira vez, as fichas são todas lidas (com OCR) e pode levar um tempo.', 6000);
   } catch (e) {
     toast(e.message, 6000);

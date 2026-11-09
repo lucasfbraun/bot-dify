@@ -138,6 +138,33 @@ CREATE TABLE IF NOT EXISTS safetychem_fichas (
     importado_em   TEXT NOT NULL,
     importado_por  TEXT
 );
+-- FDS (PT) e SDS (EN) publicadas no SafetyChem: só o texto por seção (o PDF fica no link público do SafetyChem)
+CREATE TABLE IF NOT EXISTS safetychem_fds (
+    chave          TEXT PRIMARY KEY,
+    nome           TEXT NOT NULL,
+    versao         TEXT,
+    data_versao    TEXT,
+    ordem          TEXT NOT NULL,
+    arquivo_nome   TEXT NOT NULL,
+    sha256         TEXT NOT NULL,
+    guid           TEXT,
+    dados          TEXT NOT NULL,
+    importado_em   TEXT NOT NULL,
+    importado_por  TEXT
+);
+CREATE TABLE IF NOT EXISTS safetychem_sds (
+    chave          TEXT PRIMARY KEY,
+    nome           TEXT NOT NULL,
+    versao         TEXT,
+    data_versao    TEXT,
+    ordem          TEXT NOT NULL,
+    arquivo_nome   TEXT NOT NULL,
+    sha256         TEXT NOT NULL,
+    guid           TEXT,
+    dados          TEXT NOT NULL,
+    importado_em   TEXT NOT NULL,
+    importado_por  TEXT
+);
 -- FISPQs oficiais importadas do SafetyChem (Intertox); chave = nome comercial normalizado
 CREATE TABLE IF NOT EXISTS safetychem (
     chave          TEXT PRIMARY KEY,

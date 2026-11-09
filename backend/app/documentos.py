@@ -50,7 +50,8 @@ PALAVRAS_GENERICAS = {"flexx", "de", "do", "da", "o", "a", "boletim", "tecnico",
 # nomes que as pessoas usam para cada tipo: ficha técnica = boletim; FDS/SDS/ficha de segurança = FISPQ
 SINONIMOS_TIPO = [
     (re.compile(r"ficha tecnica|boletim|technical data|\btds\b"), "boletim"),
-    (re.compile(r"\b(fispq|fds|sds|msds)\b|ficha (com dados )?de seguranca|seguranca"), "fispq"),
+    (re.compile(r"\b(sds|msds)\b|safety data sheet|\bingles\b|english"), "sds"),
+    (re.compile(r"\b(fispq|fds)\b|ficha (com dados )?de seguranca|seguranca"), "fispq"),
     (re.compile(r"emergencia"), "ficha de emergencia"),
 ]
 
@@ -246,22 +247,23 @@ async def ferramenta_openapi(request: Request):
                 {"name": "produto", "in": "query", "required": True, "schema": {"type": "string"},
                  "description": "Nome ou código do produto, ex.: AG 2047, FLEXX HR 3530"},
                 {"name": "tipo", "in": "query", "required": False, "schema": {"type": "string"},
-                 "description": "Opcional: boletim (= ficha técnica), fispq (= FDS/SDS/ficha de segurança), "
-                                "ficha de emergencia, certificado. Vazio = todos"},
+                 "description": "Opcional: boletim (= ficha técnica), fds (= FISPQ/ficha de segurança), sds (ficha "
+                                "de segurança em inglês), ficha de emergencia, certificado. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentos encontrados"}},
         }}, "/api/ferramentas/safetychem": {"get": {
             "operationId": "dados_oficiais_safetychem",
             "summary": "Conteúdo OFICIAL e atualizado do produto no SafetyChem (Intertox), separado por documento: "
-                       "ficha_tecnica (aplicação e propriedades de uso), fds (segurança, antiga FISPQ: perigos, "
-                       "pictogramas, precauções, EPI, primeiros socorros, incêndio, vazamento, manuseio, transporte, "
-                       "composição publicada) e ficha_emergencia (transporte e emergência). Prevalece sobre a "
-                       "documentação antiga do catálogo. Use para responder perguntas sobre o produto.",
+                       "ficha_tecnica (aplicação e propriedades de uso), fds (segurança, antiga FISPQ: as 16 seções "
+                       "da ABNT NBR 14725 - perigos, composição publicada, primeiros socorros, incêndio, vazamento, "
+                       "manuseio, EPI, propriedades, toxicologia, transporte...), sds (a mesma ficha de segurança em "
+                       "inglês, para clientes do exterior) e ficha_emergencia. Prevalece sobre a documentação antiga "
+                       "do catálogo. Use para responder perguntas sobre o produto.",
             "parameters": [
                 {"name": "produto", "in": "query", "required": True, "schema": {"type": "string"},
                  "description": "Nome do produto, ex.: AG 2032, FLEXX HR 3530"},
                 {"name": "documento", "in": "query", "required": False, "schema": {"type": "string"},
-                 "description": "Opcional: ficha_tecnica, fds ou ficha_emergencia. Vazio = todos"},
+                 "description": "Opcional: ficha_tecnica, fds, sds ou ficha_emergencia. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentação oficial do produto"}},
         }}},

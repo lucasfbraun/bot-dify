@@ -563,6 +563,7 @@ with sync_playwright() as p:
     print_(adm, "26-escolher-base")
     adm.click("#agente-salvar")
     checar("aviso cita a base Feedback", lambda: expect(adm.locator("#toast")).to_contain_text('Base "Feedback" ligada'))
+    adm.wait_for_load_state("networkidle")  # a lista de agentes é redesenhada depois de salvar
     adm.locator(".agente-linha", has_text="Agente Comercial").locator(".ed").click()
     checar("diálogo mostra a base escolhida", lambda: expect(adm.locator("#agente-base option:checked")).to_have_text(re.compile(r"^Feedback")))
     adm.keyboard.press("Escape")
@@ -619,7 +620,9 @@ with sync_playwright() as p:
     checar("situação das fichas técnicas", lambda: expect(adm.locator("#sc-status-fichas")).to_contain_text("FLEXX AG 2047, versão 03: nova"))
     checar("botão de sincronizar com o SafetyChem", lambda: expect(adm.locator("#btn-sc-sinc")).to_be_visible())
     adm.click("#btn-sc-sinc")
-    checar("sincronização termina e mostra o resumo", lambda: expect(adm.locator("#sc-status-sinc")).to_contain_text("4 no SafetyChem, 2 novas", timeout=20000))
+    checar("sincronização termina e mostra o resumo", lambda: expect(adm.locator("#sc-status-sinc")).to_contain_text("7 no SafetyChem, 5 novas", timeout=20000))
+    checar("resumo por tipo de documento", lambda: expect(adm.locator("#sc-status-sinc")).to_contain_text("FDS: 2 (2 novas"))
+    checar("contagem das FDS e SDS", lambda: expect(adm.locator("#sc-status-fichas")).to_contain_text("FDS (PDF): 2 · SDS (inglês): 1"))
     checar("fichas técnicas contam as sincronizadas", lambda: expect(adm.locator("#sc-status-fichas")).to_contain_text("Fichas técnicas: 3 produtos"))
     checar("situação atualizada", lambda: expect(adm.locator("#sc-status")).to_contain_text("2 produtos importados"))
     print_(adm, "29-safetychem")

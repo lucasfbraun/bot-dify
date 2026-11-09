@@ -259,16 +259,21 @@ def todos() -> list[dict]:
 
 
 def _itens_busca() -> list[dict]:
-    """Produtos com FDS (XML) e/ou ficha técnica (PDF), no formato que documentos.buscar entende."""
-    fds = {r["chave"]: r for r in todos()}
+    """Produtos com qualquer documento do SafetyChem (XML da FDS, ficha técnica, FDS ou SDS em PDF), no formato
+    que documentos.buscar entende."""
+    xml = {r["chave"]: r for r in todos()}
     fichas = {r["chave"]: r for r in fichas_todas()}
+    fds = {r["chave"]: r for r in docs_todos("fds")}
+    sds = {r["chave"]: r for r in docs_todos("sds")}
     out = []
-    for chave in sorted(set(fds) | set(fichas)):
-        f, t = fds.get(chave), fichas.get(chave)
-        p = json.loads(f["dados"]) if f else {"nome": t["nome"]}
+    for chave in sorted(set(xml) | set(fichas) | set(fds) | set(sds)):
+        f = xml.get(chave)
+        algum = f or fichas.get(chave) or fds.get(chave) or sds.get(chave)
+        p = json.loads(f["dados"]) if f else {"nome": algum["nome"]}
         out.append({"produto": p["nome"], "tipo": "FISPQ", "formato": "pdf", "arquivo": p["nome"],
                     "_busca_produto": chave, "_busca_arquivo": documentos.normalizar(p.get("nome_quimico", "")),
-                    "_dados": p, "_ficha": t, "_importado_em": (f or t)["importado_em"]})
+                    "_dados": p, "_ficha": fichas.get(chave), "_fds": fds.get(chave), "_sds": sds.get(chave),
+                    "_importado_em": algum["importado_em"]})
     return out
 
 
@@ -287,10 +292,14 @@ def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
     tipo_n = documentos.tipo_canonico(tipo)
     out = []
     for i in buscar(produto):
-        p, t = i["_dados"], i["_ficha"]
+        p, t, f, sd = i["_dados"], i["_ficha"], i["_fds"], i["_sds"]
+        # FDS: o PDF publicado (link oficial) ou, sem ele, o link que veio no XML
+        url_fds = _link_pdf_seguranca(f) if f else p.get("url_fispq")
+        rotulo_fds = _rotulo_seguranca("fds", f) if f else _rotulo_fispq(p)
         # (tipo da pasta que ele substitui, palavras aceitas no filtro, link, texto)
         candidatos = [("Boletim técnico", "boletim", _link_ficha(t) if t else "", _rotulo_ficha(t) if t else ""),
-                      ("FISPQ", "fispq fds sds", p.get("url_fispq"), _rotulo_fispq(p)),
+                      ("FISPQ", "fispq", url_fds, rotulo_fds),
+                      ("SDS (inglês)", "sds", _link_pdf_seguranca(sd) if sd else "", _rotulo_seguranca("sds", sd) if sd else ""),
                       ("Ficha de emergência", "ficha de emergencia", p.get("url_ficha_emergencia"),
                        f"Ficha de emergência {p['nome']} (SafetyChem)")]
         for rotulo_tipo, aceitos, url, texto in candidatos:
@@ -335,10 +344,12 @@ async def importar(request: Request, admin: dict = Depends(admin_ou_robo)):
 def situacao(admin: dict = Depends(exigir_admin)):
     itens = todos()
     fichas = fichas_todas()
+    fds_pdf, sds = docs_todos("fds"), docs_todos("sds")
     ultima = db.get_meta("safetychem_ultima_importacao")
     ultima_ficha = db.get_meta("safetychem_ultima_ficha")
     return {"produtos": len(itens), "ultima_importacao": json.loads(ultima) if ultima else None,
             "fichas": len(fichas), "ultima_ficha": json.loads(ultima_ficha) if ultima_ficha else None,
+            "fds_pdf": len(fds_pdf), "sds": len(sds),
             "itens": [{"nome": r["nome"], "versao": r["versao"], "importado_em": r["importado_em"],
                        "tem_link": bool(json.loads(r["dados"]).get("url_fispq"))} for r in itens],
             "itens_fichas": [{"nome": r["nome"], "versao": r["versao"], "data_versao": r["data_versao"],
@@ -350,20 +361,23 @@ def situacao(admin: dict = Depends(exigir_admin)):
 CAMPOS_FDS = ("uso_recomendado", "mistura", "produto_perigoso", "cas_produto", "classificacao", "precaucoes",
               "composicao_secao3_publicada", "ingredientes_publicos", "primeiros_socorros", "combate_incendio",
               "vazamento", "manuseio_armazenamento", "epi", "propriedades", "diagrama_hommel", "transporte")
-DOCUMENTOS = {"boletim": "ficha_tecnica", "fispq": "fds", "ficha de emergencia": "ficha_emergencia"}
+DOCUMENTOS = {"boletim": "ficha_tecnica", "fispq": "fds", "sds": "sds", "ficha de emergencia": "ficha_emergencia"}
 
 
-def _por_documento(p: dict, importado_em: str, documento: str, ficha: dict | None = None) -> dict:
+def _por_documento(p: dict, importado_em: str, documento: str, ficha: dict | None = None,
+                   fds_pdf: dict | None = None, sds: dict | None = None) -> dict:
     fds = {"versao": p.get("versao", ""), **{k: p[k] for k in CAMPOS_FDS if k in p}} if "classificacao" in p else {}
     if fds and p.get("url_fispq"):
         fds["link_markdown"] = f"[📄 {_rotulo_fispq(p)}]({p['url_fispq']})"
+    if fds_pdf:  # a FDS publicada (PDF) traz as 16 seções; o XML, quando houver, completa com os campos separados
+        fds.update(_seguranca_publica("fds", fds_pdf))
     fe = dict(p.get("ficha_emergencia") or {})
     if fe:
         fe["transporte"] = p.get("transporte", {})
         if p.get("url_ficha_emergencia"):
             fe["link_markdown"] = f"[📄 Ficha de emergência {p['nome']} (SafetyChem)]({p['url_ficha_emergencia']})"
     docs = {"ficha_tecnica": _ficha_publica(ficha) if ficha else None, "fds": fds or None,
-            "ficha_emergencia": fe or None}
+            "ficha_emergencia": fe or None, "sds": _seguranca_publica("sds", sds) if sds else None}
     out = {"nome": p["nome"], "nome_quimico": p.get("nome_quimico", ""), "importado_em": importado_em,
            "documentos_disponiveis": [k for k, v in docs.items() if v]}
     pedido = DOCUMENTOS.get(documentos.tipo_canonico(documento)) if documento else None
@@ -375,6 +389,8 @@ def _por_documento(p: dict, importado_em: str, documento: str, ficha: dict | Non
                                       "boletim técnico do catálogo/pasta.")
     if out.get("fds", 1) is None:
         out["aviso_fds"] = "A FDS deste produto ainda não foi importada do SafetyChem: use a FISPQ/FDS do catálogo."
+    if out.get("sds", 1) is None:
+        out["aviso_sds"] = "Não há SDS (versão em inglês) deste produto no SafetyChem."
     return out
 
 
@@ -394,11 +410,12 @@ async def ferramenta_safetychem(request: Request, produto: str = "", documento: 
                               "FISPQ/FDS), avisando que pode estar desatualizada."
                               + (" Ou pergunte se o usuário quis dizer um destes produtos." if sugestoes else "")}
     return {"encontrados": len(achados),
-            "produtos": [_por_documento(i["_dados"], i["_importado_em"], documento, i["_ficha"]) for i in achados],
+            "produtos": [_por_documento(i["_dados"], i["_importado_em"], documento, i["_ficha"], i["_fds"], i["_sds"])
+                         for i in achados],
             "orientacao": "Documentação OFICIAL e atualizada (SafetyChem). Cada documento vem separado: ficha_tecnica "
-                          "(aplicação e propriedades de uso), fds (segurança: perigos, precauções, EPI, primeiros "
-                          "socorros, transporte; modelo ABNT NBR 14725:2023, antiga FISPQ) e ficha_emergencia "
-                          "(transporte e emergência). Prevalece sobre a documentação antiga do catálogo e da pasta: "
+                          "(aplicação e propriedades de uso), fds (segurança, 16 seções da ABNT NBR 14725, antiga "
+                          "FISPQ), sds (a mesma ficha de segurança em inglês, para clientes do exterior) e "
+                          "ficha_emergencia (transporte e emergência). Prevalece sobre a documentação antiga do catálogo e da pasta: "
                           "em caso de diferença, use esta e avise que o documento antigo está desatualizado. Cite o "
                           "documento e a versão (ex.: \"FDS SafetyChem, versão 04\"). Para o usuário abrir um "
                           "documento, use o link_markdown dele exatamente como veio."}
@@ -425,11 +442,14 @@ RX_LIXO_FICHA = re.compile(  # cabeçalho e rodapé repetidos em toda página
 RX_ARQUIVO_FICHA = re.compile(r"ficha[ _]t[eé]cnica[ _-]+(.+?)[ _-]+v(\d+)[ _-]+([\d.]{8,20})", re.I)
 
 
+RX_VERSAO_ARQUIVO = re.compile(r"[ _-]v(\d+)[ _-]+([\d.]{8,20})(?:\.pdf)?$", re.I)
+
+
 def ordem_do_arquivo(nome_arquivo: str, data: str = "") -> str:
     """Chave para comparar versões: "0004|20250224111427" (versão, depois carimbo de publicação)."""
-    m = RX_ARQUIVO_FICHA.search(nome_arquivo or "")
-    versao = m.group(2) if m else "0"
-    carimbo = re.sub(r"\D", "", m.group(3)).ljust(14, "0")[:14] if m else ""
+    m = RX_VERSAO_ARQUIVO.search(nome_arquivo or "")
+    versao = m.group(1) if m else "0"
+    carimbo = re.sub(r"\D", "", m.group(2)).ljust(14, "0")[:14] if m else ""
     return f"{int(versao):04d}|{carimbo or data.replace('-', '')}"
 
 
@@ -577,6 +597,9 @@ def baixar_ficha(doc_id: str, user: dict = Depends(usuario_atual)):
 # SAFETYCHEM_HORARIO e pelo botão "Sincronizar agora". Nada passa por máquina de usuário: o PDF vai direto do
 # SafetyChem para a plataforma.
 DOC_FICHA_TECNICA = 49           # tipo "Ficha Técnica" no SafetyChem
+# documento da plataforma -> tipo de documento no SafetyChem (tela Documentos publicados > Documento)
+TIPOS_SAFETYCHEM = {"ficha_tecnica": DOC_FICHA_TECNICA, "fds": 1, "sds": 2}
+NOMES_TIPO = {"ficha_tecnica": "Fichas técnicas", "fds": "FDS", "sds": "SDS"}
 POR_PAGINA = int(os.getenv("SAFETYCHEM_POR_PAGINA", "500"))  # como na tela: 500 por página, uma de cada vez
 PAUSA_ENTRE_DOWNLOADS = float(os.getenv("SAFETYCHEM_PAUSA", "0.5"))
 _sinc: dict = {"tarefa": None}
@@ -599,17 +622,20 @@ def _gravar_sinc(d: dict) -> None:
     db.set_meta("safetychem_sincronizacao", json.dumps(d, ensure_ascii=False))
 
 
-async def _listar_fichas(c: httpx.AsyncClient) -> list[dict]:
+async def _entrar(c: httpx.AsyncClient) -> None:
     r = await c.post("/Login/Login?Area=Default", json={
         "Password": hashlib.md5(settings.SAFETYCHEM_SENHA.encode()).hexdigest(), "PasswordReset": "", "URAAD": False,
         "Username": settings.SAFETYCHEM_USUARIO, "EhResetSenha": False})
     if r.status_code != 200 or not (r.json() if "json" in r.headers.get("content-type", "") else {}).get("LoginValido"):
         raise ErroSafetychem("O SafetyChem recusou o usuário/senha do robô (SAFETYCHEM_USUARIO/SAFETYCHEM_SENHA).")
+
+
+async def _listar(c: httpx.AsyncClient, tipo_documento: int) -> list[dict]:
     modelo = (await c.get("/NewSafetyChem/DocumentoPublicado/GetModel")).json()["model"]
     for k in ("EmpresaDocumentos", "EmpresaUnidades", "EmpresasCombo"):
         modelo[k] = None
     dp = modelo["DadosPesquisa"]
-    dp.update({"TipoDocumento": DOC_FICHA_TECNICA, "IdiomaPesquisaId": 0, "VinculoId": modelo.get("EmpresaLogadaId"),
+    dp.update({"TipoDocumento": tipo_documento, "IdiomaPesquisaId": 0, "VinculoId": modelo.get("EmpresaLogadaId"),
                "Areas": [], "CodigosEmpresa": [], "FiltrosPesquisa": [], "FiltroPesquisaDinamico": False,
                "AplicaPaginacao": True, "PreencherColunasGrid": True,
                "UsuarioColunasGrid": modelo.get("UsuarioColunasGrid") or []})
@@ -625,49 +651,65 @@ async def _listar_fichas(c: httpx.AsyncClient) -> list[dict]:
     out = []
     for d in todas:
         nome = ((d.get("Produto") or {}).get("ProdutoInformacaoIdioma") or {}).get("NomeComercial") or ""
-        if d.get("DocumentoPublicadoGUID") and nome and d.get("UltimaVersao", True) and d.get("Ativo", True):
+        arquivo = d.get("NomeArquivo") or ""
+        demonstracao = "demonstra" in arquivo.lower() or re.search(r"\bdemo\b", nome, re.I)
+        if d.get("DocumentoPublicadoGUID") and nome and not demonstracao and d.get("UltimaVersao", True) \
+                and d.get("Ativo", True):
             out.append({"nome": nome.strip(), "arquivo": d.get("NomeArquivo") or f"{nome}.pdf",
                         "guid": d["DocumentoPublicadoGUID"], "data": (d.get("DataPublicacao") or "")[:10]})
     return out
 
 
 async def sincronizar_fichas(autor: str = "robo-safetychem") -> dict:
+    """Ficha técnica, FDS e SDS: lista cada tipo e baixa só o que é novo ou tem versão nova."""
     inicio = time.time()
-    sit = {"situacao": "rodando", "inicio": db.agora(), "por": autor, "listadas": 0, "a_baixar": 0, "processadas": 0,
-           "novas": 0, "atualizadas": 0, "sem_alteracao": 0, "mais_antigas": 0, "erros": []}
+    zerado = {"listadas": 0, "a_baixar": 0, "processadas": 0, "novas": 0, "atualizadas": 0, "sem_alteracao": 0,
+              "mais_antigas": 0, "erros": 0}
+    sit = {"situacao": "rodando", "inicio": db.agora(), "por": autor, **{k: 0 for k in zerado}, "erros": [],
+           "por_tipo": {t: dict(zerado) for t in TIPOS_SAFETYCHEM}}
     _gravar_sinc(sit)
+
+    def soma(tipo: str, campo: str, n: int = 1) -> None:
+        sit[campo] += n
+        sit["por_tipo"][tipo][campo] += n
+
     try:
         async with httpx.AsyncClient(base_url=settings.SAFETYCHEM_URL, timeout=httpx.Timeout(120, connect=20),
                                      follow_redirects=True, headers={"User-Agent": "agente-grupo-flexivel/1.0",
                                                                      "Accept": "application/json, text/plain, */*"}) as c:
-            lista = await _listar_fichas(c)
-            sit["listadas"] = len(lista)
-            atuais = {r["chave"]: r for r in fichas_todas()}
-            arquivos = {r["arquivo_nome"] for r in atuais.values()}
+            await _entrar(c)
             pendentes = []
-            for d in lista:
-                atual = atuais.get(_chave(d["nome"]))
-                if d["arquivo"] in arquivos or (atual and atual["ordem"] >= ordem_do_arquivo(d["arquivo"], d["data"])):
-                    sit["sem_alteracao"] += 1
-                else:
-                    pendentes.append(d)
-            sit["a_baixar"] = len(pendentes)
+            for tipo, tipo_sc in TIPOS_SAFETYCHEM.items():
+                lista = await _listar(c, tipo_sc)
+                soma(tipo, "listadas", len(lista))
+                atuais = {r["chave"]: r for r in (fichas_todas() if tipo == "ficha_tecnica" else docs_todos(tipo))}
+                arquivos = {r["arquivo_nome"] for r in atuais.values()}
+                for d in lista:
+                    atual = atuais.get(_chave(d["nome"]))
+                    if d["arquivo"] in arquivos or (atual and atual["ordem"] >= ordem_do_arquivo(d["arquivo"], d["data"])):
+                        soma(tipo, "sem_alteracao")
+                    else:
+                        pendentes.append((tipo, d))
+                        soma(tipo, "a_baixar")
             _gravar_sinc(sit)
-            for d in pendentes:
+            for tipo, d in pendentes:
                 try:
                     if not re.fullmatch(r"[0-9a-fA-F-]{32,40}", d["guid"]):
                         raise ErroSafetychem("identificador do documento inválido")
                     r = await c.get(f"/Doc?{d['guid']}")  # link público do documento publicado
                     if r.status_code != 200 or not r.content.startswith(b"%PDF"):
                         raise ErroSafetychem(f"download devolveu {r.status_code}")
-                    res = await importar_ficha(r.content, d["arquivo"], autor, nome_produto=d["nome"])
-                    chave_res = {"nova": "novas", "atualizada": "atualizadas", "sem_alteracao": "sem_alteracao",
-                                 "mais_antiga": "mais_antigas"}[res["resultado"]]
-                    sit[chave_res] += 1
+                    if tipo == "ficha_tecnica":
+                        res = await importar_ficha(r.content, d["arquivo"], autor, nome_produto=d["nome"])
+                    else:
+                        res = await importar_seguranca(tipo, r.content, d["arquivo"], autor, d["nome"], d["guid"])
+                    soma(tipo, {"nova": "novas", "atualizada": "atualizadas", "sem_alteracao": "sem_alteracao",
+                                "mais_antiga": "mais_antigas"}[res["resultado"]])
                 except (ErroSafetychem, HTTPException, httpx.HTTPError) as e:
                     detalhe = getattr(e, "detail", None) or str(e) or type(e).__name__
-                    sit["erros"].append(f"{d['nome']}: {detalhe}"[:200])
-                sit["processadas"] += 1
+                    sit["erros"].append(f"{NOMES_TIPO[tipo]} {d['nome']}: {detalhe}"[:200])
+                    sit["por_tipo"][tipo]["erros"] += 1
+                soma(tipo, "processadas")
                 if sit["processadas"] % 5 == 0:
                     _gravar_sinc(sit)
                 await asyncio.sleep(PAUSA_ENTRE_DOWNLOADS)
@@ -676,12 +718,13 @@ async def sincronizar_fichas(autor: str = "robo-safetychem") -> dict:
         sit["situacao"] = "erro"
         sit["mensagem"] = str(e) if isinstance(e, ErroSafetychem) else f"Falha ao falar com o SafetyChem ({type(e).__name__})."
         log.warning("sincronização SafetyChem falhou: %s", e)
+    sit["total_erros"] = len(sit["erros"])
     sit["erros"] = sit["erros"][:30]
     sit["fim"] = db.agora()
     sit["segundos"] = round(time.time() - inicio)
     _gravar_sinc(sit)
     db.auditar(autor, "sincronizar_safetychem", "", f"{sit['situacao']}: {sit['listadas']} listadas, {sit['novas']} novas, "
-               f"{sit['atualizadas']} atualizadas, {len(sit['erros'])} erros")
+               f"{sit['atualizadas']} atualizadas, {sit['total_erros']} erros")
     log.info("sincronização SafetyChem: %s", {k: v for k, v in sit.items() if k != "erros"})
     return sit
 
@@ -734,3 +777,103 @@ def situacao_sincronizacao(admin: dict = Depends(exigir_admin)):
     proxima = _proxima_execucao(datetime.now(tempo.FUSO)) if sincronizacao_configurada() else None
     return {"configurada": sincronizacao_configurada(), "horario": settings.SAFETYCHEM_HORARIO,
             "proxima": proxima.isoformat() if proxima else None, **_situacao_sinc()}
+
+
+# ------------------------------------------------------------------ FDS (PT) e SDS (EN) publicadas: texto por seção
+# Fica só o texto (o PDF de ~1 MB cada fica no link público oficial do SafetyChem, para não lotar o disco).
+# As 16 seções da ABNT NBR 14725 / GHS: "1 - IDENTIFICAÇÃO" (FDS) ou "SECTION 1: IDENTIFICATION" (SDS).
+SECOES_SEGURANCA = {
+    1: "identificacao", 2: "identificacao_de_perigos", 3: "composicao", 4: "primeiros_socorros",
+    5: "combate_a_incendio", 6: "derramamento_ou_vazamento", 7: "manuseio_e_armazenamento",
+    8: "controle_de_exposicao_e_epi", 9: "propriedades_fisicas_e_quimicas", 10: "estabilidade_e_reatividade",
+    11: "informacoes_toxicologicas", 12: "informacoes_ecologicas", 13: "destinacao_final", 14: "transporte",
+    15: "regulamentacoes", 16: "outras_informacoes",
+}
+RX_SECAO_SEGURANCA = re.compile(r"^(?:section\s+)?(\d{1,2})\s*[-.:–]\s*(\S.{2,120})$", re.I)
+RX_LIXO_SEGURANCA = re.compile(  # cabeçalho repetido em toda página da FDS/SDS
+    r"^(fds|fispq|sds|em conformidade com.*|in accordance with.*|classification and labell?ing.*|chapter 1\.5.*|"
+    r"ficha com dados de seguran[cç]a|ficha de informa[cç][oõ]es de seguran[cç]a.*|safety data sheet|produto:.*|"
+    r"product:.*|(vers[aã]o|revision):.*(p[aá]gina|pages?):.*)$", re.I)
+ROTULO_SEGURANCA = {"fds": "FDS", "sds": "SDS (inglês)"}
+
+
+def docs_todos(tipo: str) -> list[dict]:
+    tabela = {"fds": "safetychem_fds", "sds": "safetychem_sds"}[tipo]
+    with db.conn() as c:
+        return [dict(r) for r in c.execute(f"SELECT * FROM {tabela} ORDER BY nome")]
+
+
+def _link_pdf_seguranca(r: dict) -> str:
+    return f"{settings.SAFETYCHEM_URL}/Doc?{r['guid']}"
+
+
+def _rotulo_seguranca(tipo: str, r: dict) -> str:
+    return f"{ROTULO_SEGURANCA[tipo]} {r['nome']} (SafetyChem" + (f", versão {r['versao']}" if r.get("versao") else "") + ")"
+
+
+def _seguranca_publica(tipo: str, r: dict) -> dict:
+    d = json.loads(r["dados"])
+    return {"versao": r["versao"] or "", "data": d.get("data", ""), "secoes": d.get("secoes", {}),
+            "link_markdown": f"[📄 {_rotulo_seguranca(tipo, r)}]({_link_pdf_seguranca(r)})"}
+
+
+def ler_seguranca(texto: str) -> dict:
+    """Separa a FDS/SDS nas 16 seções, sem o cabeçalho repetido nas páginas."""
+    m_prod = re.search(r"(?:Produto|Product):[ \t]*([^\n]+)", texto or "")
+    m_ver = re.search(r"(?:Vers[aã]o|Revision):\s*(\d+)", texto or "")
+    data = ""
+    if m := re.search(r"Data:\s*(\d{2})/(\d{2})/(\d{4})", texto or ""):          # FDS: dd/mm/aaaa
+        data = f"{m.group(3)}-{m.group(2)}-{m.group(1)}"
+    elif m := re.search(r"Date:\s*(\d{2})/(\d{2})/(\d{4})", texto or ""):        # SDS: mm/dd/aaaa
+        data = f"{m.group(3)}-{m.group(1)}-{m.group(2)}"
+    secoes, atual, proxima = {}, None, 1
+    for linha in (texto or "").splitlines():
+        linha = linha.strip()
+        if not linha or RX_LIXO_SEGURANCA.match(linha):
+            continue
+        m = RX_SECAO_SEGURANCA.match(linha)
+        # título de seção: número na sequência (evita notas como "2 Classificação de perigos: ...") e em maiúsculas
+        if m and int(m.group(1)) == proxima and m.group(2).upper() == m.group(2) and int(m.group(1)) in SECOES_SEGURANCA:
+            atual = SECOES_SEGURANCA[int(m.group(1))]
+            secoes[atual] = []
+            proxima += 1
+            continue
+        if atual:
+            secoes[atual].append(linha)
+    return {"nome": m_prod.group(1).strip() if m_prod else "", "versao": m_ver.group(1) if m_ver else "",
+            "data": data, "secoes": {k: "\n".join(v).strip() for k, v in secoes.items() if v}}
+
+
+async def importar_seguranca(tipo: str, dados: bytes, nome_arquivo: str, autor: str, nome_produto: str = "",
+                             guid: str = "") -> dict:
+    if not dados.startswith(b"%PDF"):
+        raise HTTPException(415, "A FDS/SDS precisa ser o PDF publicado no SafetyChem.")
+    if not settings.CONVERSOR_URL:
+        raise HTTPException(503, "O conversor de arquivos não está configurado: não dá para ler o PDF.")
+    try:  # FDS/SDS são PDF digital: sem OCR (mais rápido)
+        _, info = await conhecimento._conversor(dados, nome_arquivo or "fds.pdf", ocr=False)
+    except conhecimento.ErroProcessamento as e:
+        raise HTTPException(422, str(e))
+    f = ler_seguranca(info["texto"])
+    nome = nome_produto or f["nome"]
+    if not nome or len(f["secoes"]) < 8:
+        raise HTTPException(422, "Não reconheci as seções da FDS/SDS neste PDF.")
+    chave, sha = _chave(nome), hashlib.sha256(dados).hexdigest()
+    ordem = ordem_do_arquivo(nome_arquivo, f["data"])
+    tabela = {"fds": "safetychem_fds", "sds": "safetychem_sds"}[tipo]
+    with db.conn() as c:
+        atual = c.execute(f"SELECT sha256, ordem, versao FROM {tabela} WHERE chave=?", (chave,)).fetchone()
+    base = {"produto": nome, "versao": f["versao"], "arquivo": nome_arquivo}
+    if atual and atual["sha256"] == sha:
+        return {**base, "resultado": "sem_alteracao"}
+    if atual and ordem < atual["ordem"]:
+        return {**base, "resultado": "mais_antiga", "versao_atual": atual["versao"]}
+    with db.conn() as c:
+        c.execute(f"INSERT INTO {tabela} (chave, nome, versao, data_versao, ordem, arquivo_nome, sha256, guid, dados, "
+                  "importado_em, importado_por) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chave) DO UPDATE SET "
+                  "nome=excluded.nome, versao=excluded.versao, data_versao=excluded.data_versao, ordem=excluded.ordem, "
+                  "arquivo_nome=excluded.arquivo_nome, sha256=excluded.sha256, guid=excluded.guid, dados=excluded.dados, "
+                  "importado_em=excluded.importado_em, importado_por=excluded.importado_por",
+                  (chave, nome, f["versao"], f["data"], ordem, nome_arquivo, sha, guid,
+                   json.dumps({"data": f["data"], "secoes": f["secoes"]}, ensure_ascii=False), db.agora(), autor))
+    return {**base, "resultado": "atualizada" if atual else "nova", "secoes": len(f["secoes"])}

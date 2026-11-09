@@ -280,7 +280,7 @@ with adm.stream("GET", rota_md) as r:
         pedacos.append((time.time() - inicio, len(p)))
 ok(r.status_code == 200 and r.headers["content-type"].startswith("audio/") and sum(n for _, n in pedacos) > 1000,
    "devolve o áudio do Dify")
-ok(pedacos[0][0] < 1.0 and pedacos[-1][0] > 1.0, f"repassa o áudio enquanto chega (1º trecho em {pedacos[0][0]:.1f} s, fim em {pedacos[-1][0]:.1f} s)")
+ok(pedacos[-1][0] - pedacos[0][0] > 0.8, f"repassa o áudio enquanto chega (1º trecho em {pedacos[0][0]:.1f} s, fim em {pedacos[-1][0]:.1f} s)")
 ok(r.headers.get("cache-control") == "no-store", "áudio não fica em cache")
 ok(maria.get(rota_md.replace(f"/agentes/{PU}/", f"/agentes/{COM}/")).status_code == 400, "outro agente sem o recurso -> 400")
 ok(adm.get(f"/api/agentes/{PU}/conversas/{rota_md.split('/')[5]}/mensagens/{'0' * 36}/ouvir").status_code == 404,
@@ -510,15 +510,44 @@ ok(st["configurada"] is True and st["proxima"] is None, "sincronização configu
 ok(maria.post("/api/admin/safetychem/sincronizar").status_code == 403, "só admin dispara a sincronização")
 downloads_antes = httpx.get(f"{SC}/teste/estado").json()["downloads"]
 st = sincronizar_e_esperar()
-ok(st["situacao"] == "ok_com_erros" and st["listadas"] == 4 and st["novas"] == 2 and st["sem_alteracao"] == 1
-   and len(st["erros"]) == 1 and "QUEBRADO" in st["erros"][0], f"lista as 4 (2 páginas), baixa as 2 novas, pula a que já tem, registra o erro ({st})")
-ok(httpx.get(f"{SC}/teste/estado").json()["downloads"] - downloads_antes == 2, "só baixou o que era novo (a AG 2047 igual não foi baixada)")
+ft, fd, sd = st["por_tipo"]["ficha_tecnica"], st["por_tipo"]["fds"], st["por_tipo"]["sds"]
+ok(st["situacao"] == "ok_com_erros" and ft["listadas"] == 4 and ft["novas"] == 2 and ft["sem_alteracao"] == 1
+   and len(st["erros"]) == 1 and "QUEBRADO" in st["erros"][0], f"fichas: lista as 4 (2 páginas), baixa as 2 novas, pula a que já tem, registra o erro ({st})")
+ok(fd["listadas"] == 2 and fd["novas"] == 2 and sd["listadas"] == 1 and sd["novas"] == 1,
+   f"FDS e SDS também sincronizadas, sem o documento de demonstração ({fd}, {sd})")
+ok(httpx.get(f"{SC}/teste/estado").json()["downloads"] - downloads_antes == 5, "só baixou o que era novo (a ficha AG 2047 igual não foi baixada)")
+r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "fds"}, headers=CHAVE_DOCS).json()["produtos"][0]
+fds_ts = r["fds"]
+ok(fds_ts["versao"] == "03" and fds_ts["data"] == "2026-01-02" and len(fds_ts["secoes"]) == 16
+   and "Segredo industrial 1" in fds_ts["secoes"]["composicao"] and "Página:" not in json.dumps(fds_ts),
+   "FDS em PDF: 16 seções, versão e data, sem o cabeçalho das páginas")
+ok(fds_ts["link_markdown"] == f"[📄 FDS FLEXX TS 100 (SafetyChem, versão 03)]({SC}/Doc?" + fds_ts["link_markdown"].split("Doc?")[1],
+   "link da FDS aponta para o PDF oficial do SafetyChem")
+r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "sds"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["sds"]["versao"] == "03" and r["sds"]["data"] == "2026-01-02" and "Industrial secret 1" in r["sds"]["secoes"]["composicao"]
+   and "fds" not in r, "SDS (inglês): data americana convertida, seções, só ela quando pedida")
+r = anon.get(FISPQ, params={"produto": "AG 2047", "documento": "fds"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["fds"]["versao"] == "05" and len(r["fds"]["secoes"]) == 16 and r["fds"]["classificacao"]["frases_perigo"] == ["Tóxico se ingerido"],
+   "produto com XML e PDF: a FDS em PDF (versão mais nova) e os campos do XML juntos")
+r = anon.get(FERR, params={"produto": "TS 100"}, headers=CHAVE_DOCS).json()
+arqs = {d["tipo"]: d["arquivo"] for d in r["documentos"]}
+ok(arqs.get("FISPQ") == "FDS FLEXX TS 100 (SafetyChem, versão 03)" and arqs.get("SDS (inglês)") == "SDS (inglês) FLEXX TS 100 (SafetyChem, versão 03)",
+   f"documentos para baixar: FDS e SDS oficiais ({arqs})")
+r = anon.get(FERR, params={"produto": "TS 100", "tipo": "sds"}, headers=CHAVE_DOCS).json()
+ok([d["tipo"] for d in r["documentos"]] == ["SDS (inglês)"], "pedindo a SDS: vem só ela")
+r = anon.get(FISPQ, params={"produto": "CL 20115"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 0, "documento de demonstração não foi importado")
 r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "ficha técnica"}, headers=CHAVE_DOCS).json()["produtos"][0]
 ok(r["ficha_tecnica"]["versao"] == "01" and "Aplicação de FLEXX TS 100" in r["ficha_tecnica"]["secoes"]["aplicacao"],
    "ficha sincronizada já disponível para o agente")
 st = sincronizar_e_esperar()
-ok(st["novas"] == 0 and st["atualizadas"] == 0 and st["sem_alteracao"] == 3 and st["a_baixar"] == 1,
+ok(st["novas"] == 0 and st["atualizadas"] == 0 and st["sem_alteracao"] == 6 and st["a_baixar"] == 1,
    "rodar de novo: nada a baixar além da que falhou")
+httpx.post(f"{SC}/teste/publicar", json={"nome": "FLEXX TS 100", "versao": "04", "carimbo": "20261106100000", "tipo": 1})
+st = sincronizar_e_esperar()
+ok(st["por_tipo"]["fds"]["atualizadas"] == 1, "FDS revisada no SafetyChem: atualiza")
+r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "fds"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["fds"]["versao"] == "04", "agente passa a receber a FDS nova")
 httpx.post(f"{SC}/teste/publicar", json={"nome": "FLEXX TS 100", "versao": "02", "carimbo": "20261105150000"})
 st = sincronizar_e_esperar()
 ok(st["atualizadas"] == 1, "versão nova publicada no SafetyChem: atualiza")

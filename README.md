@@ -423,12 +423,22 @@ A ficha técnica (o boletim: aplicação, especificações, tempos de reatividad
 - **Fica sempre a versão mais recente** de cada produto: compara a versão ("Versão: 04") e a data/carimbo de publicação (do nome do arquivo, ex.: `Ficha Tecnica_FLEXX AG 2032_V04_20250224111427.pdf`). Mesmo PDF = sem alteração; versão mais antiga = ignorada (o resumo avisa); mais nova = substitui (o PDF anterior é apagado).
 - O agente recebe a ficha por seção em `dados_oficiais_safetychem` (documento `ficha_tecnica`), e a `documentos_para_baixar` entrega o **PDF oficial** no lugar do boletim antigo da pasta. O link é estável por produto e sempre abre a versão mais recente; só funciona para quem está logado e cada download vai para a auditoria.
 
+### FDS e SDS publicadas (PDF)
+
+Além da ficha técnica, o robô sincroniza a **FDS NBR 14725 (PT)** e a **SDS GHS (EN)** publicadas no SafetyChem (tipos 1 e 2 em Documentos publicados), com a mesma regra de "só o que mudou".
+
+- A plataforma lê o PDF (sem OCR: são PDFs digitais) e separa as **16 seções** da norma ("1 - IDENTIFICAÇÃO" na FDS, "SECTION 1: IDENTIFICATION" na SDS), sem o cabeçalho repetido nas páginas. A data da SDS (formato americano) é convertida.
+- Fica **só o texto por seção**: o PDF (cerca de 1 MB cada, ~2.300 documentos) não é guardado, para não lotar o disco. O botão de download aponta para o **link público oficial** do SafetyChem (o mesmo PDF).
+- Documentos de **demonstração** ("Demo") são ignorados.
+- No agente: `dados_oficiais_safetychem` traz a `fds` por seção para todos os produtos (quando houver XML importado, os campos dele vêm junto) e o documento `sds` (inglês). `documentos_para_baixar` entrega a FDS e a SDS oficiais (`tipo=sds` para a inglesa).
+- **Composição:** a Seção 3 publicada mostra "Segredo industrial 1/2" com faixas. Atenção: pela norma, a FDS publicada cita os nomes de ingredientes perigosos nas seções 8 (limites de exposição), 10 e 11; isso já está no PDF público que vai aos clientes, e o agente recebe a FDS como publicada. O que fica protegido são as concentrações exatas e o CAS, que só existem no XML e são descartados na importação.
+
 ### Sincronização automática das fichas técnicas (robô)
 
 A própria plataforma faz o papel do robô, sem navegador e sem container extra:
 
 1. Entra no SafetyChem com o usuário do robô (`SAFETYCHEM_USUARIO` / `SAFETYCHEM_SENHA`).
-2. Lista as fichas técnicas publicadas: é a mesma pesquisa da tela **Documentos → Documentos publicados → Documento: Ficha Técnica**, 500 por página, uma página por vez.
+2. Lista os documentos publicados de cada tipo (Ficha Técnica, FDS e SDS): é a mesma pesquisa da tela **Documentos → Documentos publicados → Documento**, 500 por página, uma página por vez.
 3. Compara com o que já está guardado (versão e carimbo do arquivo) e **baixa só as novas ou com versão nova**, pelo link público de cada documento (`/Doc?<GUID>`). O PDF vai direto do SafetyChem para a plataforma, no servidor; nada passa pela máquina de ninguém.
 4. Lê cada PDF (com OCR, para pegar também o que está como imagem, como fórmulas) e guarda só a versão mais recente.
 
