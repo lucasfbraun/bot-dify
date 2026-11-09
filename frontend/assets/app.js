@@ -2518,11 +2518,43 @@ async function carregarSafetychem() {
     $('#sc-status').textContent = s.produtos
       ? `${s.produtos} produto${s.produtos === 1 ? '' : 's'} importado${s.produtos === 1 ? '' : 's'}`
         + (u ? ` · última importação em ${dataHora(u.quando)} por ${u.por} (${u.novos} novos, ${u.atualizados} atualizados)` : '')
-      : 'Nenhum produto importado ainda. Enquanto isso, o agente usa as FISPQs antigas da pasta e do catálogo.';
-    $('#cartao-safetychem').classList.toggle('pendente', !s.produtos);
+      : 'FDS: nenhum produto importado ainda (o agente usa as FISPQs antigas da pasta e do catálogo).';
+    const uf = s.ultima_ficha;
+    $('#sc-status-fichas').textContent = s.fichas
+      ? `Fichas técnicas: ${s.fichas} produto${s.fichas === 1 ? '' : 's'}`
+        + (uf ? ` · último envio em ${dataHora(uf.quando)} por ${uf.por} (${uf.produto}, versão ${uf.versao}: ${RESULTADO_FICHA[uf.resultado] || uf.resultado})` : '')
+      : 'Fichas técnicas: nenhuma importada ainda (o agente usa os boletins antigos da pasta).';
+    $('#cartao-safetychem').classList.toggle('pendente', !s.produtos && !s.fichas);
   } catch (e) {
     $('#sc-status').textContent = e.message;
   }
+}
+
+const RESULTADO_FICHA = { nova: 'nova', atualizada: 'atualizada', sem_alteracao: 'sem alteração', mais_antiga: 'mais antiga, ignorada' };
+
+async function importarFichas(arquivos) {
+  const btn = $('#btn-sc-fichas');
+  btn.disabled = true;
+  const conta = { nova: 0, atualizada: 0, sem_alteracao: 0, mais_antiga: 0 };
+  const erros = [];
+  for (const [i, f] of arquivos.entries()) {
+    btn.textContent = `Lendo ${i + 1} de ${arquivos.length}…`;
+    try {
+      const r = await (await api('/api/admin/safetychem/fichas', {
+        metodo: 'POST', bruto: new Blob([f], { type: 'application/pdf' }),
+        cabecalhos: { 'X-Arquivo-Nome': encodeURIComponent(f.name) },
+      })).json();
+      conta[r.resultado] = (conta[r.resultado] || 0) + 1;
+    } catch (e) {
+      erros.push(`${f.name}: ${e.message}`);
+    }
+  }
+  btn.disabled = false;
+  btn.textContent = 'Importar fichas técnicas (PDF)';
+  toast(`Fichas técnicas: ${conta.nova} novas · ${conta.atualizada} atualizadas · ${conta.sem_alteracao} sem alteração`
+    + (conta.mais_antiga ? ` · ${conta.mais_antiga} mais antigas ignoradas` : '')
+    + (erros.length ? ` · ${erros.length} com erro (${erros.slice(0, 2).join('; ')})` : ''), erros.length ? 10000 : 7000);
+  carregarSafetychem();
 }
 
 async function importarSafetychem(arquivo) {
@@ -2533,13 +2565,13 @@ async function importarSafetychem(arquivo) {
     const r = await (await api('/api/admin/safetychem/importar', {
       metodo: 'POST', bruto: new Blob([arquivo], { type: 'application/xml' }),
     })).json();
-    toast(`SafetyChem: ${r.total} produtos lidos · ${r.novos} novos · ${r.atualizados} atualizados · ${r.sem_alteracao} sem alteração.`, 7000);
+    toast(`FDS (SafetyChem): ${r.total} produtos lidos · ${r.novos} novos · ${r.atualizados} atualizados · ${r.sem_alteracao} sem alteração.`, 7000);
     carregarSafetychem();
   } catch (e) {
     toast(e.message, 7000);
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Importar XML';
+    btn.textContent = 'Importar XML (FDS)';
   }
 }
 
@@ -2872,6 +2904,12 @@ function ligarEventos() {
   $('#form-chave-conh').addEventListener('submit', salvarChaveConhecimento);
   $('#btn-add-base').addEventListener('click', abrirDialogoBase);
   $('#btn-sc-importar').addEventListener('click', () => $('#sc-arquivo').click());
+  $('#btn-sc-fichas').addEventListener('click', () => $('#sc-fichas').click());
+  $('#sc-fichas').addEventListener('change', (e) => {
+    const fs = [...e.target.files];
+    e.target.value = '';
+    if (fs.length) importarFichas(fs);
+  });
   $('#sc-arquivo').addEventListener('change', (e) => {
     const f = e.target.files[0];
     e.target.value = '';

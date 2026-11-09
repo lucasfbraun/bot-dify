@@ -414,6 +414,19 @@ O SafetyChem é a fonte **oficial e atualizada** das FISPQs/FDS e fichas de emer
 - A ferramenta **documentos_para_baixar** passa a entregar a **FISPQ e a ficha de emergência oficiais** (links do SafetyChem) no lugar das versões antigas da pasta. Os boletins técnicos continuam vindo da pasta.
 - Os textos chegam limpos (sem as marcações `\b`, `\super` e os separadores `#` do SafetyChem).
 
+### Fichas técnicas (PDF publicado)
+
+A ficha técnica (o boletim: aplicação, especificações, tempos de reatividade, processo sugerido, embalagens, armazenamento) **não sai no XML** do SafetyChem: ela existe como PDF publicado. Por isso entra por outro caminho:
+
+- **Administração → Agentes → Importar fichas técnicas (PDF)**: envie um ou vários PDFs baixados do SafetyChem (o robô usa a mesma rota).
+- A plataforma lê o texto pelo conversor (com OCR se o PDF for escaneado), tira o cabeçalho e o rodapé repetidos e separa as seções pelos títulos (APLICAÇÃO, ESPECIFICAÇÕES TÉCNICAS, CARACTERÍSTICAS E VANTAGENS, TEMPOS DE REATIVIDADE, PROCESSO SUGERIDO, SEGURANÇA, EMBALAGENS, ARMAZENAMENTO E RESÍDUOS, OBSERVAÇÕES).
+- **Fica sempre a versão mais recente** de cada produto: compara a versão ("Versão: 04") e a data/carimbo de publicação (do nome do arquivo, ex.: `Ficha Tecnica_FLEXX AG 2032_V04_20250224111427.pdf`). Mesmo PDF = sem alteração; versão mais antiga = ignorada (o resumo avisa); mais nova = substitui (o PDF anterior é apagado).
+- O agente recebe a ficha por seção em `dados_oficiais_safetychem` (documento `ficha_tecnica`), e a `documentos_para_baixar` entrega o **PDF oficial** no lugar do boletim antigo da pasta. O link é estável por produto e sempre abre a versão mais recente; só funciona para quem está logado e cada download vai para a auditoria.
+
+### Robô (RPA)
+
+O robô entra no SafetyChem, baixa a exportação XML e os PDFs publicados das fichas técnicas e envia para as mesmas rotas da importação manual (`/api/admin/safetychem/importar` e `/api/admin/safetychem/fichas`), identificado pela chave `SAFETYCHEM_ROBO_CHAVE` (cabeçalho `Authorization: Bearer ...`). O cartão do SafetyChem mostra o último envio (quem, quando, resultado).
+
 ### Segredo industrial
 
 A exportação traz os ingredientes reais (nome, CAS e concentração) marcados como *segredo industrial*. **Eles são descartados na importação e nunca ficam guardados nem chegam ao agente.** Só ficam os ingredientes não sigilosos e o texto publicado na Seção 3 da FISPQ (ex.: "Segredo industrial 1: 18,75 - 31,25%").

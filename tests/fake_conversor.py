@@ -31,6 +31,10 @@ async def chamadas():
 async def processar(request: Request, nome: str, ocr: int = 1):
     dados = await request.body()
     CHAMADAS.append(nome)
+    if dados.startswith(b"%PDF-1.4\n%FICHA-TESTE\n"):
+        texto = dados.split(b"\n", 2)[2].decode("utf-8")
+        return {"pdf": base64.b64encode(dados).decode(), "texto": texto, "paginas": 2,
+                "caracteres": len("".join(texto.split())), "ocr": "nao_aplicado"}
     if "corrompido" in nome:
         raise HTTPException(422, "Não foi possível abrir o arquivo (corrompido ou formato não suportado).")
     texto = (f"Texto convertido de {nome}{' com OCR' if ocr else ''}. Linha de produto FLEXX: espuma flexível de poliuretano. " * 30)

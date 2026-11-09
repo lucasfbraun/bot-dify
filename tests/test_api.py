@@ -425,6 +425,71 @@ r = anon.get(FERR, params={"produto": "AG 2047", "tipo": "fds"}, headers=CHAVE_D
 ok([d["arquivo"] for d in r["documentos"]] == ["FDS FLEXX AG 2047 (SafetyChem, versão 02)"], "pedindo \"FDS\": também vem a oficial")
 r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 1 and r["documentos"][0]["fonte"].startswith("SafetyChem"), "produto só no SafetyChem: entrega a FISPQ oficial")
+secao("SafetyChem: fichas técnicas (PDF publicado), sempre a versão mais recente")
+
+
+def ficha_pdf(produto, versao, data, extra=""):
+    """PDF de teste: o conversor falso devolve o texto como se o tivesse extraído de um PDF de verdade."""
+    texto = (f"Versão: {versao}\nData: {data}\nFICHA TÉCNICA\nProduto: {produto}\nÉ um pré-polímero de PU.\n"
+             f"APLICAÇÃO\nAgente de colagem para espuma aglomerada.{extra}\nESPECIFICAÇÕES TÉCNICAS\nNCO % 4,0 - 6,0\n"
+             f"Viscosidade (40°C) cP 80,0 - 150,0\nTEMPOS DE REATIVIDADE\nTempo de Gel minutos 15,0 a 20,0\n"
+             f"As informações aqui apresentadas refletem nosso atual estado de conhecimento\nEMBALAGENS\n"
+             f"Bombona 25 Kg / Tambor 220 Kg\nARMAZENAMENTO E RESÍDUOS\nVida útil de 180 dias.")
+    return b"%PDF-1.4\n%FICHA-TESTE\n" + texto.encode("utf-8")
+
+
+def enviar_ficha(cliente, dados, nome, robo=False):
+    hs = {"Content-Type": "application/pdf", "X-Arquivo-Nome": quote(nome)}
+    if robo:
+        hs.update(H)
+        hs["Authorization"] = "Bearer chave-do-robo-de-teste"
+        return httpx.post(f"{B}/api/admin/safetychem/fichas", content=dados, headers=hs)
+    return cliente.post("/api/admin/safetychem/fichas", content=dados, headers=hs)
+
+
+ARQ47 = "Ficha Tecnica_FLEXX AG 2047_V{v}_2025022411{v}00.pdf"
+ok(enviar_ficha(maria, ficha_pdf("FLEXX AG 2047", "02", "24/02/2025"), ARQ47.format(v="02")).status_code == 403, "só admin (ou o robô) envia ficha")
+ok(httpx.post(f"{B}/api/admin/safetychem/fichas", content=b"%PDF", headers={**H, "Authorization": "Bearer errada"}).status_code == 401,
+   "robô com chave errada -> 401")
+ok(enviar_ficha(adm, b"isto nao e pdf", "x.pdf").status_code == 415, "arquivo que não é PDF -> 415")
+r = enviar_ficha(adm, ficha_pdf("FLEXX AG 2047", "02", "24/02/2025"), ARQ47.format(v="02"))
+ok(r.status_code == 200 and r.json()["resultado"] == "nova" and r.json()["versao"] == "02"
+   and {"aplicacao", "especificacoes_tecnicas", "tempos_de_reatividade", "embalagens"} <= set(r.json()["secoes"]),
+   f"ficha técnica nova lida e separada por seção ({r.json()})")
+r = enviar_ficha(None, ficha_pdf("FLEXX AG 2047", "02", "24/02/2025"), ARQ47.format(v="02"), robo=True).json()
+ok(r["resultado"] == "sem_alteracao", "o robô envia o mesmo PDF: sem alteração")
+r = enviar_ficha(adm, ficha_pdf("FLEXX AG 2047", "01", "10/01/2024", " Versão velha."), ARQ47.format(v="01")).json()
+ok(r["resultado"] == "mais_antiga" and r["versao_atual"] == "02", "versão mais antiga é ignorada (fica a atual)")
+r = enviar_ficha(None, ficha_pdf("FLEXX AG 2047", "03", "05/11/2026", " Revisada em 2026."), ARQ47.format(v="03"), robo=True).json()
+ok(r["resultado"] == "atualizada" and r["versao"] == "03", "versão nova substitui a anterior")
+ok(enviar_ficha(adm, ficha_pdf("FLEXX HR 3530", "01", "01/03/2026"), "Ficha Tecnica_FLEXX HR 3530_V01_20260301120000.pdf").json()["resultado"] == "nova",
+   "ficha de produto que ainda não tem FDS importada")
+st = adm.get("/api/admin/safetychem").json()
+ok(st["fichas"] == 2 and st["ultima_ficha"]["produto"] == "FLEXX HR 3530" and st["ultima_ficha"]["por"] == "admin.ti",
+   "situação mostra as fichas técnicas e o último envio")
+
+r = anon.get(FISPQ, params={"produto": "AG 2047", "documento": "ficha técnica"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ft = r["ficha_tecnica"]
+ok(ft["versao"] == "03" and "Revisada em 2026" in ft["secoes"]["aplicacao"] and "NCO % 4,0 - 6,0" in ft["secoes"]["especificacoes_tecnicas"]
+   and "As informações aqui" not in str(ft) and "aviso_ficha_tecnica" not in r, "agente recebe a ficha técnica mais recente, por seção, sem o rodapé")
+ok(ft["link_markdown"].startswith("[📄 Ficha técnica FLEXX AG 2047 (SafetyChem, versão 03)](/api/safetychem/fichas/"),
+   "link da ficha técnica oficial")
+r = anon.get(FISPQ, params={"produto": "HR 3530"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["ficha_tecnica"]["versao"] == "01" and r["fds"] is None and "aviso_fds" in r, "produto só com ficha técnica: avisa que a FDS falta")
+link_ft = ft["link_markdown"].split("](")[1].rstrip(")")
+ok(anon.get(link_ft).status_code == 401, "PDF da ficha técnica só para quem está logado")
+r = maria.get(link_ft)
+ok(r.status_code == 200 and r.content.startswith(b"%PDF") and b"Revisada em 2026" in r.content
+   and "AG%202047_V03" in r.headers["content-disposition"], "download entrega o PDF da versão mais recente")
+r = anon.get(FERR, params={"produto": "AG 2047"}, headers=CHAVE_DOCS).json()
+arqs = [(d["tipo"], d["arquivo"]) for d in r["documentos"]]
+ok(("Boletim técnico", "Ficha técnica FLEXX AG 2047 (SafetyChem, versão 03)") in arqs
+   and not any(a.startswith("Boletim FLEXX AG 2047") for _, a in arqs), f"documentos: o boletim antigo da pasta sai, entra a ficha técnica oficial ({arqs})")
+r = anon.get(FERR, params={"produto": "AG 2047", "tipo": "ficha técnica"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["Ficha técnica FLEXX AG 2047 (SafetyChem, versão 03)"], "pedindo a ficha técnica: vem só a oficial")
+ok(httpx.post(f"{B}/api/admin/safetychem/importar", content=XML_SC, headers={**H, **XML, "Authorization": "Bearer chave-do-robo-de-teste"}).status_code == 200,
+   "o robô também envia o XML da FDS")
+
 esq = anon.get("/api/ferramentas/openapi.json").json()
 ok(esq["paths"][FISPQ]["get"]["operationId"] == "dados_oficiais_safetychem", "esquema OpenAPI inclui a ferramenta do SafetyChem")
 

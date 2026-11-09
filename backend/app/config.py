@@ -65,6 +65,8 @@ class Settings:
     DOCUMENTOS_CHAVE = os.getenv("DOCUMENTOS_CHAVE", "")
     DOCUMENTOS_INDICE_MIN = int(os.getenv("DOCUMENTOS_INDICE_MIN", "15"))  # releitura da pasta (minutos)
     DOCUMENTOS_URL_FERRAMENTA = os.getenv("DOCUMENTOS_URL_FERRAMENTA", "").rstrip("/")  # URL que o Dify usa
+    # Robô (RPA) do SafetyChem: chave com que ele envia o XML e as fichas técnicas baixadas (vazia = só o admin)
+    SAFETYCHEM_ROBO_CHAVE = os.getenv("SAFETYCHEM_ROBO_CHAVE", "")
 
     # Proteção de login
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))

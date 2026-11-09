@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=13">
+  <link rel="stylesheet" href="/assets/app.css?v=14">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -280,12 +280,17 @@
           </div>
           <div class="cartao-config" id="cartao-safetychem">
             <div class="cartao-config-texto">
-              <strong>FISPQs oficiais do SafetyChem (Intertox)</strong>
+              <strong>Documentação oficial do SafetyChem (Intertox)</strong>
               <span class="muted" id="sc-status">Carregando…</span>
-              <span class="muted dica">No SafetyChem: Dados &gt; Exportar, campos da FISPQ e da ficha de emergência (inclua "URL do documento publicado"), formato <b>XML</b>. Importar de novo atualiza os produtos alterados, sem duplicar. Ingredientes marcados como segredo industrial são descartados.</span>
+              <span class="muted" id="sc-status-fichas"></span>
+              <span class="muted dica"><b>FDS e ficha de emergência:</b> no SafetyChem, Dados &gt; Exportar, formato <b>XML</b> (ingredientes em segredo industrial são descartados). <b>Fichas técnicas:</b> os PDFs publicados (pode enviar vários de uma vez). Fica sempre a versão mais recente de cada produto.</span>
             </div>
             <input type="file" id="sc-arquivo" accept=".xml,text/xml,application/xml" hidden>
-            <button class="btn btn-texto" type="button" id="btn-sc-importar">Importar XML</button>
+            <input type="file" id="sc-fichas" accept=".pdf,application/pdf" multiple hidden>
+            <div class="sc-botoes">
+              <button class="btn btn-texto" type="button" id="btn-sc-importar">Importar XML (FDS)</button>
+              <button class="btn btn-texto" type="button" id="btn-sc-fichas">Importar fichas técnicas (PDF)</button>
+            </div>
           </div>
           <div class="barra-aba">
             <p class="muted">Agentes de conversa do Dify. Cada um usa a própria chave de API, que fica só no servidor.</p>
@@ -509,6 +514,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=13" type="module"></script>
+  <script src="/assets/app.js?v=14" type="module"></script>
 </body>
 </html>

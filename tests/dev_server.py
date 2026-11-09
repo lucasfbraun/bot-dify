@@ -26,6 +26,7 @@ os.environ.setdefault("DIFY_API_URL", f"http://127.0.0.1:{DIFY_PORT}/v1")
 os.environ.setdefault("CONVERSOR_URL", f"http://127.0.0.1:{CONVERSOR_PORT}")
 os.environ.setdefault("CONHECIMENTO_INTERVALO_STATUS", "0.2")
 os.environ.setdefault("DOCUMENTOS_CHAVE", "chave-da-ferramenta-de-teste")
+os.environ.setdefault("SAFETYCHEM_ROBO_CHAVE", "chave-do-robo-de-teste")
 
 
 def _pasta_documentos() -> str:

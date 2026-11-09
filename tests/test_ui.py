@@ -606,9 +606,17 @@ with sync_playwright() as p:
     adm.keyboard.press("Escape")
 
     print("== FISPQs oficiais do SafetyChem (importar XML)")
-    checar("cartão do SafetyChem na aba Agentes", lambda: expect(adm.locator("#sc-status")).to_contain_text("Nenhum produto importado"))
+    checar("cartão do SafetyChem na aba Agentes", lambda: expect(adm.locator("#sc-status")).to_contain_text("nenhum produto importado"))
     adm.set_input_files("#sc-arquivo", os.path.join(os.path.dirname(os.path.abspath(__file__)), "safetychem_exemplo.xml"))
     checar("importa e mostra o resumo", lambda: expect(adm.locator("#toast")).to_contain_text("2 produtos lidos · 2 novos"))
+    checar("ainda sem fichas técnicas", lambda: expect(adm.locator("#sc-status-fichas")).to_contain_text("nenhuma importada"))
+    ficha = ("Versão: 03\nData: 05/11/2026\nFICHA TÉCNICA\nProduto: FLEXX AG 2047\nAPLICAÇÃO\nAgente de colagem.\n"
+             "ESPECIFICAÇÕES TÉCNICAS\nNCO % 4,0 - 6,0\nEMBALAGENS\nTambor 220 Kg").encode()
+    adm.set_input_files("#sc-fichas", files=[
+        {"name": "Ficha Tecnica_FLEXX AG 2047_V03_20261105100000.pdf", "mimeType": "application/pdf", "buffer": b"%PDF-1.4\n%FICHA-TESTE\n" + ficha},
+        {"name": "nao-e-pdf.pdf", "mimeType": "application/pdf", "buffer": b"texto qualquer"}])
+    checar("fichas técnicas: resumo com a nova e o erro", lambda: expect(adm.locator("#toast")).to_contain_text("1 novas"))
+    checar("situação das fichas técnicas", lambda: expect(adm.locator("#sc-status-fichas")).to_contain_text("FLEXX AG 2047, versão 03: nova"))
     checar("situação atualizada", lambda: expect(adm.locator("#sc-status")).to_contain_text("2 produtos importados"))
     print_(adm, "29-safetychem")
     adm.set_input_files("#sc-arquivo", files=[{"name": "errado.xml", "mimeType": "application/xml", "buffer": b"<Clientes/>"}])

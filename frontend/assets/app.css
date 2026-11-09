@@ -559,7 +559,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 }
 .cartao-config.pendente { border-left-color: var(--erro); }
 #cartao-safetychem { margin-top: 4px; }
-#btn-sc-importar { white-space: nowrap; flex: none; }
+.sc-botoes { display: flex; flex-direction: column; gap: 4px; flex: none; }
+.sc-botoes .btn { white-space: nowrap; }
 #cartao-safetychem.pendente { border-left-color: var(--borda); }
 .cartao-config-texto .dica { margin: 4px 0 0; font-size: 12px; }
 .cartao-config-texto { display: flex; flex-direction: column; min-width: 0; font-size: 14px; }

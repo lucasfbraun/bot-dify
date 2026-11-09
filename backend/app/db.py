@@ -125,6 +125,19 @@ CREATE TABLE IF NOT EXISTS eventos_conhecimento (
     detalhe    TEXT
 );
 CREATE INDEX IF NOT EXISTS ix_eventos_conh_quando ON eventos_conhecimento(quando);
+-- fichas técnicas (PDF publicado no SafetyChem): só a versão mais recente de cada produto
+CREATE TABLE IF NOT EXISTS safetychem_fichas (
+    chave          TEXT PRIMARY KEY,
+    nome           TEXT NOT NULL,
+    versao         TEXT,
+    data_versao    TEXT,
+    ordem          TEXT NOT NULL,
+    arquivo_nome   TEXT NOT NULL,
+    sha256         TEXT NOT NULL,
+    dados          TEXT NOT NULL,
+    importado_em   TEXT NOT NULL,
+    importado_por  TEXT
+);
 -- FISPQs oficiais importadas do SafetyChem (Intertox); chave = nome comercial normalizado
 CREATE TABLE IF NOT EXISTS safetychem (
     chave          TEXT PRIMARY KEY,

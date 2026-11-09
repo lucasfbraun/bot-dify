@@ -10,15 +10,21 @@ aqui, ele PREVALECE sobre as FISPQs antigas da pasta de documentos e do catálog
 - O agente consulta pela ferramenta dados_oficiais_safetychem (GET /api/ferramentas/safetychem, mesma chave
   DOCUMENTOS_CHAVE), que separa a resposta por documento: ficha técnica, FDS (antiga FISPQ) e ficha de emergência.
 """
+import hashlib
 import json
 import logging
+import os
 import re
+import secrets
 import xml.etree.ElementTree as ET
+from urllib.parse import quote, unquote
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import FileResponse
 
-from . import db, documentos
-from .security import exigir_admin
+from . import conhecimento, db, documentos
+from .config import settings
+from .security import exigir_admin, usuario_atual
 
 log = logging.getLogger("agente.safetychem")
 router = APIRouter()
@@ -248,13 +254,16 @@ def todos() -> list[dict]:
 
 
 def _itens_busca() -> list[dict]:
-    """No formato que documentos.buscar entende (a busca por nome é a mesma dos documentos da pasta)."""
+    """Produtos com FDS (XML) e/ou ficha técnica (PDF), no formato que documentos.buscar entende."""
+    fds = {r["chave"]: r for r in todos()}
+    fichas = {r["chave"]: r for r in fichas_todas()}
     out = []
-    for r in todos():
-        p = json.loads(r["dados"])
-        out.append({"produto": r["nome"], "tipo": "FISPQ", "formato": "pdf", "arquivo": r["nome"],
-                    "_busca_produto": r["chave"], "_busca_arquivo": documentos.normalizar(p.get("nome_quimico", "")),
-                    "_dados": p, "_importado_em": r["importado_em"]})
+    for chave in sorted(set(fds) | set(fichas)):
+        f, t = fds.get(chave), fichas.get(chave)
+        p = json.loads(f["dados"]) if f else {"nome": t["nome"]}
+        out.append({"produto": p["nome"], "tipo": "FISPQ", "formato": "pdf", "arquivo": p["nome"],
+                    "_busca_produto": chave, "_busca_arquivo": documentos.normalizar(p.get("nome_quimico", "")),
+                    "_dados": p, "_ficha": t, "_importado_em": (f or t)["importado_em"]})
     return out
 
 
@@ -273,9 +282,10 @@ def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
     tipo_n = documentos.tipo_canonico(tipo)
     out = []
     for i in buscar(produto):
-        p = i["_dados"]
+        p, t = i["_dados"], i["_ficha"]
         # (tipo da pasta que ele substitui, palavras aceitas no filtro, link, texto)
-        candidatos = [("FISPQ", "fispq fds sds", p.get("url_fispq"), _rotulo_fispq(p)),
+        candidatos = [("Boletim técnico", "boletim", _link_ficha(t) if t else "", _rotulo_ficha(t) if t else ""),
+                      ("FISPQ", "fispq fds sds", p.get("url_fispq"), _rotulo_fispq(p)),
                       ("Ficha de emergência", "ficha de emergencia", p.get("url_ficha_emergencia"),
                        f"Ficha de emergência {p['nome']} (SafetyChem)")]
         for rotulo_tipo, aceitos, url, texto in candidatos:
@@ -288,8 +298,17 @@ def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
 
 
 # ------------------------------------------------------------------ rotas: administração
+def admin_ou_robo(request: Request) -> dict:
+    """O robô (RPA) se identifica pela chave SAFETYCHEM_ROBO_CHAVE; senão, precisa ser admin logado."""
+    chave = settings.SAFETYCHEM_ROBO_CHAVE
+    auth = request.headers.get("authorization", "")
+    if chave and auth.lower().startswith("bearer ") and secrets.compare_digest(auth[7:].strip(), chave):
+        return {"username": "robo-safetychem", "perfil": "admin"}
+    return exigir_admin(usuario_atual(request))
+
+
 @router.post("/api/admin/safetychem/importar")
-async def importar(request: Request, admin: dict = Depends(exigir_admin)):
+async def importar(request: Request, admin: dict = Depends(admin_ou_robo)):
     limite = MAX_MB * 1024 * 1024
     dados = bytearray()
     async for parte in request.stream():
@@ -310,10 +329,15 @@ async def importar(request: Request, admin: dict = Depends(exigir_admin)):
 @router.get("/api/admin/safetychem")
 def situacao(admin: dict = Depends(exigir_admin)):
     itens = todos()
+    fichas = fichas_todas()
     ultima = db.get_meta("safetychem_ultima_importacao")
+    ultima_ficha = db.get_meta("safetychem_ultima_ficha")
     return {"produtos": len(itens), "ultima_importacao": json.loads(ultima) if ultima else None,
+            "fichas": len(fichas), "ultima_ficha": json.loads(ultima_ficha) if ultima_ficha else None,
             "itens": [{"nome": r["nome"], "versao": r["versao"], "importado_em": r["importado_em"],
-                       "tem_link": bool(json.loads(r["dados"]).get("url_fispq"))} for r in itens]}
+                       "tem_link": bool(json.loads(r["dados"]).get("url_fispq"))} for r in itens],
+            "itens_fichas": [{"nome": r["nome"], "versao": r["versao"], "data_versao": r["data_versao"],
+                              "arquivo": r["arquivo_nome"], "importado_em": r["importado_em"]} for r in fichas]}
 
 
 # ------------------------------------------------------------------ ferramenta para o agente (Dify)
@@ -324,16 +348,17 @@ CAMPOS_FDS = ("uso_recomendado", "mistura", "produto_perigoso", "cas_produto", "
 DOCUMENTOS = {"boletim": "ficha_tecnica", "fispq": "fds", "ficha de emergencia": "ficha_emergencia"}
 
 
-def _por_documento(p: dict, importado_em: str, documento: str) -> dict:
-    fds = {"versao": p.get("versao", ""), **{k: p[k] for k in CAMPOS_FDS if k in p}}
-    if p.get("url_fispq"):
+def _por_documento(p: dict, importado_em: str, documento: str, ficha: dict | None = None) -> dict:
+    fds = {"versao": p.get("versao", ""), **{k: p[k] for k in CAMPOS_FDS if k in p}} if "classificacao" in p else {}
+    if fds and p.get("url_fispq"):
         fds["link_markdown"] = f"[📄 {_rotulo_fispq(p)}]({p['url_fispq']})"
     fe = dict(p.get("ficha_emergencia") or {})
     if fe:
         fe["transporte"] = p.get("transporte", {})
         if p.get("url_ficha_emergencia"):
             fe["link_markdown"] = f"[📄 Ficha de emergência {p['nome']} (SafetyChem)]({p['url_ficha_emergencia']})"
-    docs = {"ficha_tecnica": p.get("ficha_tecnica") or None, "fds": fds, "ficha_emergencia": fe or None}
+    docs = {"ficha_tecnica": _ficha_publica(ficha) if ficha else None, "fds": fds or None,
+            "ficha_emergencia": fe or None}
     out = {"nome": p["nome"], "nome_quimico": p.get("nome_quimico", ""), "importado_em": importado_em,
            "documentos_disponiveis": [k for k, v in docs.items() if v]}
     pedido = DOCUMENTOS.get(documentos.tipo_canonico(documento)) if documento else None
@@ -341,8 +366,10 @@ def _por_documento(p: dict, importado_em: str, documento: str) -> dict:
         if pedido is None or k == pedido:
             out[k] = v
     if out.get("ficha_tecnica", 1) is None:
-        out["aviso_ficha_tecnica"] = ("A ficha técnica deste produto ainda não vem do SafetyChem: use o boletim "
-                                      "técnico do catálogo/pasta.")
+        out["aviso_ficha_tecnica"] = ("A ficha técnica deste produto ainda não foi importada do SafetyChem: use o "
+                                      "boletim técnico do catálogo/pasta.")
+    if out.get("fds", 1) is None:
+        out["aviso_fds"] = "A FDS deste produto ainda não foi importada do SafetyChem: use a FISPQ/FDS do catálogo."
     return out
 
 
@@ -362,7 +389,7 @@ async def ferramenta_safetychem(request: Request, produto: str = "", documento: 
                               "FISPQ/FDS), avisando que pode estar desatualizada."
                               + (" Ou pergunte se o usuário quis dizer um destes produtos." if sugestoes else "")}
     return {"encontrados": len(achados),
-            "produtos": [_por_documento(i["_dados"], i["_importado_em"], documento) for i in achados],
+            "produtos": [_por_documento(i["_dados"], i["_importado_em"], documento, i["_ficha"]) for i in achados],
             "orientacao": "Documentação OFICIAL e atualizada (SafetyChem). Cada documento vem separado: ficha_tecnica "
                           "(aplicação e propriedades de uso), fds (segurança: perigos, precauções, EPI, primeiros "
                           "socorros, transporte; modelo ABNT NBR 14725:2023, antiga FISPQ) e ficha_emergencia "
@@ -370,3 +397,161 @@ async def ferramenta_safetychem(request: Request, produto: str = "", documento: 
                           "em caso de diferença, use esta e avise que o documento antigo está desatualizado. Cite o "
                           "documento e a versão (ex.: \"FDS SafetyChem, versão 04\"). Para o usuário abrir um "
                           "documento, use o link_markdown dele exatamente como veio."}
+
+
+# ------------------------------------------------------------------ fichas técnicas (PDF publicado no SafetyChem)
+# A ficha técnica não sai no XML: o robô (ou o admin) baixa o PDF publicado e envia aqui. Fica só a versão mais
+# recente de cada produto; o PDF é guardado para o download e o texto é separado por seção para o agente.
+FICHA_MAX_MB = 20
+SECOES_FICHA = [  # (chave, título como aparece na ficha, sem acento e em minúsculas)
+    ("aplicacao", r"aplicacao|aplicacoes"),
+    ("especificacoes_tecnicas", r"especificacoes tecnicas|propriedades tipicas|caracteristicas tecnicas"),
+    ("caracteristicas_e_vantagens", r"caracteristicas e vantagens|caracteristicas|vantagens"),
+    ("tempos_de_reatividade", r"tempos de reatividade|reatividade"),
+    ("processo_sugerido", r"processo sugerido|modo de uso|modo de aplicacao|instrucoes de uso"),
+    ("seguranca", r"seguranca"),
+    ("embalagens", r"embalagens|embalagem"),
+    ("armazenamento_e_residuos", r"armazenamento e residuos|armazenamento|validade"),
+    ("observacoes", r"observacoes|observacao"),
+]
+RX_LIXO_FICHA = re.compile(  # cabeçalho e rodapé repetidos em toda página
+    r"^(vers[aã]o:?\s*\d*|data:?\s*[\d/]*|ficha t[eé]cnica|produto:.*|as informa[cç][oõ]es aqui apresentadas.*|"
+    r"em condi[cç][oõ]es controladas.*|deste documento pode ser reproduzido.*|sujeita o infrator.*|rua:.*)$", re.I)
+RX_ARQUIVO_FICHA = re.compile(r"ficha[ _]t[eé]cnica[ _-]+(.+?)[ _-]+v(\d+)[ _-]+(\d{8,14})", re.I)
+
+
+def _dir_fichas() -> str:
+    d = os.path.join(settings.DATA_DIR, "safetychem", "fichas")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def fichas_todas() -> list[dict]:
+    with db.conn() as c:
+        return [dict(r) for r in c.execute("SELECT * FROM safetychem_fichas ORDER BY nome")]
+
+
+def _id_ficha(chave: str) -> str:
+    """Link estável por produto: continua valendo quando sai uma versão nova (sempre entrega a mais recente)."""
+    return documentos._id("safetychem-ficha/" + chave)
+
+
+def _link_ficha(t: dict) -> str:
+    return f"/api/safetychem/fichas/{_id_ficha(t['chave'])}"
+
+
+def _rotulo_ficha(t: dict) -> str:
+    return f"Ficha técnica {t['nome']} (SafetyChem" + (f", versão {t['versao']}" if t.get("versao") else "") + ")"
+
+
+def _ficha_publica(t: dict) -> dict:
+    d = json.loads(t["dados"])
+    out = {"versao": t["versao"] or "", "data": d.get("data", ""), "descricao": d.get("descricao", ""),
+           "secoes": d.get("secoes", {}), "link_markdown": f"[📄 {_rotulo_ficha(t)}]({_link_ficha(t)})"}
+    if not out["secoes"]:
+        out["texto"] = d.get("texto", "")
+    return out
+
+
+def ler_ficha(texto: str, nome_arquivo: str) -> dict:
+    """Separa a ficha técnica em seções pelos títulos (APLICAÇÃO, ESPECIFICAÇÕES TÉCNICAS...)."""
+    m_arq = RX_ARQUIVO_FICHA.search(nome_arquivo or "")
+    m_prod = re.search(r"Produto:[ \t]*([^\n]*)(?:\n[ \t]*([^\n]+))?", texto or "")
+    nome = (m_prod.group(1).strip() or (m_prod.group(2) or "").strip()) if m_prod else ""
+    nome = nome or (m_arq.group(1).replace("_", " ").strip() if m_arq else "")
+    m_ver = re.search(r"Vers[aã]o:\s*(\d+)", texto or "")
+    versao = m_ver.group(1) if m_ver else (m_arq.group(2) if m_arq else "")
+    m_data = re.search(r"Data:\s*(\d{2})/(\d{2})/(\d{4})", texto or "")
+    data = f"{m_data.group(3)}-{m_data.group(2)}-{m_data.group(1)}" if m_data else ""
+    carimbo = m_arq.group(3) if m_arq else ""
+    secoes, atual, descricao = {}, None, []
+    for linha in (texto or "").splitlines():
+        linha = linha.strip()
+        if not linha or RX_LIXO_FICHA.match(linha) or documentos.normalizar(linha) == documentos.normalizar(nome):
+            continue
+        titulo = documentos.normalizar(linha)
+        chave = next((k for k, rx in SECOES_FICHA if re.fullmatch(rx, titulo)), None) if linha.upper() == linha else None
+        if chave:
+            atual = chave
+            secoes.setdefault(atual, [])
+            continue
+        (secoes[atual] if atual else descricao).append(linha)
+    return {"nome": nome, "versao": versao, "data": data,
+            # ordem para saber qual é a mais nova: versão, depois data/carimbo de publicação
+            "ordem": f"{int(versao or 0):04d}|{carimbo or data.replace('-', '')}",
+            "descricao": " ".join(descricao).strip(),
+            "secoes": {k: "\n".join(v).strip() for k, v in secoes.items() if v}, "texto": (texto or "").strip()}
+
+
+async def importar_ficha(dados: bytes, nome_arquivo: str, autor: str) -> dict:
+    if not dados.startswith(b"%PDF"):
+        raise HTTPException(415, "A ficha técnica precisa ser o PDF publicado no SafetyChem.")
+    if not settings.CONVERSOR_URL:
+        raise HTTPException(503, "O conversor de arquivos não está configurado: não dá para ler o PDF.")
+    try:
+        _, info = await conhecimento._conversor(dados, nome_arquivo or "ficha.pdf", ocr=False)
+        if len(info["texto"].strip()) < 200:  # PDF escaneado: tenta com OCR
+            _, info = await conhecimento._conversor(dados, nome_arquivo or "ficha.pdf", ocr=True)
+    except conhecimento.ErroProcessamento as e:
+        raise HTTPException(422, str(e))
+    f = ler_ficha(info["texto"], nome_arquivo)
+    if not f["nome"]:
+        raise HTTPException(422, "Não achei o nome do produto na ficha (linha \"Produto:\").")
+    chave = _chave(f["nome"])
+    sha = hashlib.sha256(dados).hexdigest()
+    with db.conn() as c:
+        atual = c.execute("SELECT sha256, ordem, versao FROM safetychem_fichas WHERE chave=?", (chave,)).fetchone()
+    base = {"produto": f["nome"], "versao": f["versao"], "arquivo": nome_arquivo}
+    if atual and atual["sha256"] == sha:
+        return {**base, "resultado": "sem_alteracao"}
+    if atual and f["ordem"] < atual["ordem"]:
+        return {**base, "resultado": "mais_antiga", "versao_atual": atual["versao"]}
+    caminho = os.path.join(_dir_fichas(), f"{sha}.pdf")
+    with open(caminho + ".tmp", "wb") as fh:
+        fh.write(dados)
+    os.replace(caminho + ".tmp", caminho)
+    gravado = {k: f[k] for k in ("data", "descricao", "secoes", "texto")}
+    with db.conn() as c:
+        c.execute("INSERT INTO safetychem_fichas (chave, nome, versao, data_versao, ordem, arquivo_nome, sha256, dados, "
+                  "importado_em, importado_por) VALUES (?,?,?,?,?,?,?,?,?,?) ON CONFLICT(chave) DO UPDATE SET "
+                  "nome=excluded.nome, versao=excluded.versao, data_versao=excluded.data_versao, ordem=excluded.ordem, "
+                  "arquivo_nome=excluded.arquivo_nome, sha256=excluded.sha256, dados=excluded.dados, "
+                  "importado_em=excluded.importado_em, importado_por=excluded.importado_por",
+                  (chave, f["nome"], f["versao"], f["data"], f["ordem"], nome_arquivo or f"{f['nome']}.pdf", sha,
+                   json.dumps(gravado, ensure_ascii=False), db.agora(), autor))
+    if atual and atual["sha256"] != sha:
+        try:
+            os.remove(os.path.join(_dir_fichas(), f"{atual['sha256']}.pdf"))
+        except OSError:
+            pass
+    return {**base, "resultado": "atualizada" if atual else "nova", "secoes": sorted(f["secoes"])}
+
+
+@router.post("/api/admin/safetychem/fichas")
+async def importar_ficha_rota(request: Request, admin: dict = Depends(admin_ou_robo)):
+    """Uma ficha técnica (PDF) por envio; nome do arquivo no cabeçalho X-Arquivo-Nome."""
+    limite = FICHA_MAX_MB * 1024 * 1024
+    dados = bytearray()
+    async for parte in request.stream():
+        dados += parte
+        if len(dados) > limite:
+            raise HTTPException(413, f"O PDF passou de {FICHA_MAX_MB} MB.")
+    nome = unquote(request.headers.get("x-arquivo-nome", ""))[:200]
+    r = await importar_ficha(bytes(dados), nome, admin["username"])
+    db.set_meta("safetychem_ultima_ficha", json.dumps({**r, "quando": db.agora(), "por": admin["username"]},
+                                                      ensure_ascii=False))
+    db.auditar(admin["username"], "importar_ficha_tecnica", r["produto"], f"{r['resultado']} (versão {r['versao']})")
+    return r
+
+
+@router.get("/api/safetychem/fichas/{doc_id}")
+def baixar_ficha(doc_id: str, user: dict = Depends(usuario_atual)):
+    """PDF da ficha técnica oficial (sempre a versão mais recente importada). Só para quem está logado."""
+    t = next((f for f in fichas_todas() if _id_ficha(f["chave"]) == doc_id), None)
+    caminho = os.path.join(_dir_fichas(), f"{t['sha256']}.pdf") if t else ""
+    if not t or not os.path.isfile(caminho):
+        raise HTTPException(404, "Ficha técnica não encontrada.")
+    db.auditar(user["username"], "baixar_ficha_tecnica", t["nome"], f"versão {t['versao']}")
+    nome = t["arquivo_nome"] if t["arquivo_nome"].lower().endswith(".pdf") else f"{t['arquivo_nome']}.pdf"
+    return FileResponse(caminho, media_type="application/pdf", headers={
+        "Content-Disposition": f"inline; filename*=UTF-8''{quote(nome)}", "Cache-Control": "private, no-store"})
