@@ -269,7 +269,7 @@ def _rotulo_fispq(p: dict) -> str:
 
 def documentos_oficiais(produto: str, tipo: str = "") -> list[dict]:
     """FISPQ e ficha de emergência oficiais (links do SafetyChem) para a ferramenta de documentos."""
-    tipo_n = documentos.normalizar(tipo)
+    tipo_n = documentos.tipo_canonico(tipo)
     out = []
     for i in buscar(produto):
         p = i["_dados"]

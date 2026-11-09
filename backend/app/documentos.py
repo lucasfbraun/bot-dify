@@ -40,13 +40,27 @@ RX_ARQUIVO_IGNORADO = re.compile(r"^~\$|^\.|^thumbs\.db$|^desktop\.ini$", re.I)
 TIPOS = [  # (rótulo, padrão no nome do arquivo), na ordem de prioridade
     ("FISPQ", re.compile(r"\b(fispq|fds|sds|msds)\b")),
     ("Ficha de emergência", re.compile(r"ficha de emergencia|\bfe\b")),
-    ("Boletim técnico", re.compile(r"boletim|\bbt\b|technical data|tds")),
+    ("Boletim técnico", re.compile(r"boletim|ficha tecnica|\bbt\b|technical data|\btds\b")),
     ("Certificado / análise", re.compile(r"certificado|analise|laudo|\bcoa\b")),
     ("Laboratório", re.compile(r"laboratorio")),
 ]
 MAX_RESULTADOS = 30
-PALAVRAS_GENERICAS = {"flexx", "de", "do", "da", "o", "a", "boletim", "tecnico", "fispq", "fds", "ficha",
-                      "documento", "documentos", "produto", "arquivo", "pdf", "word"}
+PALAVRAS_GENERICAS = {"flexx", "de", "do", "da", "o", "a", "boletim", "tecnico", "tecnica", "fispq", "fds", "sds",
+                      "ficha", "seguranca", "dados", "documento", "documentos", "produto", "arquivo", "pdf", "word"}
+# nomes que as pessoas usam para cada tipo: ficha técnica = boletim; FDS/SDS/ficha de segurança = FISPQ
+SINONIMOS_TIPO = [
+    (re.compile(r"ficha tecnica|boletim|technical data|\btds\b"), "boletim"),
+    (re.compile(r"\b(fispq|fds|sds|msds)\b|ficha (com dados )?de seguranca|seguranca"), "fispq"),
+    (re.compile(r"emergencia"), "ficha de emergencia"),
+]
+
+
+def tipo_canonico(tipo: str) -> str:
+    t = normalizar(tipo)
+    for rx, canonico in SINONIMOS_TIPO:
+        if rx.search(t):
+            return canonico
+    return t
 
 _indice: dict = {"t": 0.0, "itens": [], "por_id": {}, "erro": ""}
 _trava = asyncio.Lock()
@@ -129,7 +143,7 @@ def buscar(itens: list[dict], produto: str, tipo: str = "") -> list[dict]:
     termos = [t for t in termos if t not in PALAVRAS_GENERICAS] or termos
     if not termos:
         return []
-    tipo_n = normalizar(tipo)
+    tipo_n = tipo_canonico(tipo)
     achados = []
     for i in itens:
         palavras_prod = set(i["_busca_produto"].split())
@@ -226,13 +240,14 @@ async def ferramenta_openapi(request: Request):
         "paths": {"/api/ferramentas/documentos-produto": {"get": {
             "operationId": "documentos_para_baixar",
             "summary": "Arquivos atuais (PDF/Word) de um produto para o usuário abrir ou baixar. Use quando o "
-                       "usuário pedir o boletim, a FISPQ ou outro documento de um produto. Responda com o "
-                       "link_markdown de cada arquivo.",
+                       "usuário pedir a ficha técnica (boletim), a FDS/FISPQ ou outro documento de um produto. "
+                       "Responda com o link_markdown de cada arquivo.",
             "parameters": [
                 {"name": "produto", "in": "query", "required": True, "schema": {"type": "string"},
                  "description": "Nome ou código do produto, ex.: AG 2047, FLEXX HR 3530"},
                 {"name": "tipo", "in": "query", "required": False, "schema": {"type": "string"},
-                 "description": "Opcional: boletim, fispq, ficha de emergencia, certificado. Vazio = todos"},
+                 "description": "Opcional: boletim (= ficha técnica), fispq (= FDS/SDS/ficha de segurança), "
+                                "ficha de emergencia, certificado. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentos encontrados"}},
         }}, "/api/ferramentas/fds-safetychem": {"get": {

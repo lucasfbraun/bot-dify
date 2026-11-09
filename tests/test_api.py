@@ -322,6 +322,12 @@ ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_FISPQ.docx"], "fil
 r = anon.get(FERR, params={"produto": "boletim do AG 2068"}, headers=CHAVE_DOCS).json()
 ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_Boletim Técnico.pdf", "FLEXX_AG_2068_FISPQ.docx"],
    "ignora palavras como \"boletim do\" no nome do produto")
+r = anon.get(FERR, params={"produto": "AG 2068", "tipo": "ficha técnica"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_Boletim Técnico.pdf"], "\"ficha técnica\" = boletim")
+r = anon.get(FERR, params={"produto": "ficha técnica do AG 2068"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 2, "\"ficha técnica do\" no nome do produto é ignorado")
+r = anon.get(FERR, params={"produto": "AG 2068", "tipo": "ficha de segurança"}, headers=CHAVE_DOCS).json()
+ok([d["arquivo"] for d in r["documentos"]] == ["FLEXX_AG_2068_FISPQ.docx"], "\"ficha de segurança\"/FDS = FISPQ")
 r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 0 and "FLEXX AG 2047" in r["produtos_parecidos"], "produto sem documentos: sugere parecidos")
 ok(anon.get(FERR, params={"produto": " "}, headers=CHAVE_DOCS).status_code == 400, "produto vazio -> 400")
