@@ -490,6 +490,45 @@ ok([d["arquivo"] for d in r["documentos"]] == ["Ficha técnica FLEXX AG 2047 (Sa
 ok(httpx.post(f"{B}/api/admin/safetychem/importar", content=XML_SC, headers={**H, **XML, "Authorization": "Bearer chave-do-robo-de-teste"}).status_code == 200,
    "o robô também envia o XML da FDS")
 
+secao("SafetyChem: sincronização automática das fichas técnicas")
+SC = f"http://127.0.0.1:{os.getenv('SAFETYCHEM_PORT', '8096')}"
+
+
+def sincronizar_e_esperar():
+    r = adm.post("/api/admin/safetychem/sincronizar")
+    assert r.status_code == 200, r.text
+    for _ in range(150):
+        st = adm.get("/api/admin/safetychem/sincronizacao").json()
+        if st.get("situacao") != "rodando":
+            return st
+        time.sleep(0.2)
+    return st
+
+
+st = adm.get("/api/admin/safetychem/sincronizacao").json()
+ok(st["configurada"] is True and st["proxima"] is None, "sincronização configurada (nos testes, sem horário: só pelo botão)")
+ok(maria.post("/api/admin/safetychem/sincronizar").status_code == 403, "só admin dispara a sincronização")
+downloads_antes = httpx.get(f"{SC}/teste/estado").json()["downloads"]
+st = sincronizar_e_esperar()
+ok(st["situacao"] == "ok_com_erros" and st["listadas"] == 4 and st["novas"] == 2 and st["sem_alteracao"] == 1
+   and len(st["erros"]) == 1 and "QUEBRADO" in st["erros"][0], f"lista as 4 (2 páginas), baixa as 2 novas, pula a que já tem, registra o erro ({st})")
+ok(httpx.get(f"{SC}/teste/estado").json()["downloads"] - downloads_antes == 2, "só baixou o que era novo (a AG 2047 igual não foi baixada)")
+r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "ficha técnica"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["ficha_tecnica"]["versao"] == "01" and "Aplicação de FLEXX TS 100" in r["ficha_tecnica"]["secoes"]["aplicacao"],
+   "ficha sincronizada já disponível para o agente")
+st = sincronizar_e_esperar()
+ok(st["novas"] == 0 and st["atualizadas"] == 0 and st["sem_alteracao"] == 3 and st["a_baixar"] == 1,
+   "rodar de novo: nada a baixar além da que falhou")
+httpx.post(f"{SC}/teste/publicar", json={"nome": "FLEXX TS 100", "versao": "02", "carimbo": "20261105150000"})
+st = sincronizar_e_esperar()
+ok(st["atualizadas"] == 1, "versão nova publicada no SafetyChem: atualiza")
+r = anon.get(FISPQ, params={"produto": "TS 100", "documento": "ficha técnica"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["ficha_tecnica"]["versao"] == "02", "agente passa a receber a versão nova")
+httpx.post(f"{SC}/teste/senha", json={"senha": "trocada"})
+st = sincronizar_e_esperar()
+ok(st["situacao"] == "erro" and "usuário/senha" in st["mensagem"], "senha do robô errada: erro claro na situação")
+httpx.post(f"{SC}/teste/senha", json={"senha": "senha-teste"})
+
 esq = anon.get("/api/ferramentas/openapi.json").json()
 ok(esq["paths"][FISPQ]["get"]["operationId"] == "dados_oficiais_safetychem", "esquema OpenAPI inclui a ferramenta do SafetyChem")
 

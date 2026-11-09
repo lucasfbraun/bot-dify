@@ -2525,9 +2525,52 @@ async function carregarSafetychem() {
         + (uf ? ` · último envio em ${dataHora(uf.quando)} por ${uf.por} (${uf.produto}, versão ${uf.versao}: ${RESULTADO_FICHA[uf.resultado] || uf.resultado})` : '')
       : 'Fichas técnicas: nenhuma importada ainda (o agente usa os boletins antigos da pasta).';
     $('#cartao-safetychem').classList.toggle('pendente', !s.produtos && !s.fichas);
+    carregarSincronizacao();
   } catch (e) {
     $('#sc-status').textContent = e.message;
   }
+}
+
+let timerSinc = null;
+async function carregarSincronizacao() {
+  clearTimeout(timerSinc);
+  let s;
+  try {
+    s = await getJSON('/api/admin/safetychem/sincronizacao');
+  } catch (e) {
+    $('#sc-status-sinc').textContent = e.message;
+    return;
+  }
+  const btn = $('#btn-sc-sinc');
+  btn.hidden = !s.configurada;
+  if (!s.configurada) {
+    $('#sc-status-sinc').textContent = 'Sincronização automática desligada (falta o usuário do robô no .env).';
+    return;
+  }
+  const agenda = s.proxima ? `todo dia às ${s.horario}` : 'só pelo botão';
+  let txt = `Sincronização automática com o SafetyChem: ${agenda}`;
+  if (s.situacao === 'rodando') {
+    txt += ` · rodando agora: ${s.processadas} de ${s.a_baixar} fichas a baixar (${s.listadas} no SafetyChem)`;
+    timerSinc = setTimeout(carregarSafetychem, 4000);
+  } else if (s.situacao === 'erro') {
+    txt += ` · última em ${dataHora(s.fim)}: ERRO — ${s.mensagem || ''}`;
+  } else if (s.situacao) {
+    txt += ` · última em ${dataHora(s.fim)}: ${s.listadas} no SafetyChem, ${s.novas} novas, ${s.atualizadas} atualizadas, ${s.sem_alteracao} sem alteração`
+      + (s.erros?.length ? `, ${s.erros.length} com erro (${s.erros.slice(0, 2).join('; ')})` : '');
+  }
+  $('#sc-status-sinc').textContent = txt;
+  btn.disabled = s.situacao === 'rodando';
+  btn.textContent = s.situacao === 'rodando' ? 'Sincronizando…' : 'Sincronizar agora';
+}
+
+async function sincronizarAgora() {
+  try {
+    await enviarJSON('/api/admin/safetychem/sincronizar', 'POST', {});
+    toast('Sincronização iniciada. Na primeira vez, as fichas são todas lidas (com OCR) e pode levar um tempo.', 6000);
+  } catch (e) {
+    toast(e.message, 6000);
+  }
+  carregarSincronizacao();
 }
 
 const RESULTADO_FICHA = { nova: 'nova', atualizada: 'atualizada', sem_alteracao: 'sem alteração', mais_antiga: 'mais antiga, ignorada' };
@@ -2905,6 +2948,7 @@ function ligarEventos() {
   $('#btn-add-base').addEventListener('click', abrirDialogoBase);
   $('#btn-sc-importar').addEventListener('click', () => $('#sc-arquivo').click());
   $('#btn-sc-fichas').addEventListener('click', () => $('#sc-fichas').click());
+  $('#btn-sc-sinc').addEventListener('click', sincronizarAgora);
   $('#sc-fichas').addEventListener('change', (e) => {
     const fs = [...e.target.files];
     e.target.value = '';

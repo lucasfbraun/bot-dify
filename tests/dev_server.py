@@ -16,6 +16,7 @@ sys.path[:0] = [os.path.join(AQUI, "..", "backend"), AQUI]
 APP_PORT = int(os.getenv("APP_PORT", "8088"))
 DIFY_PORT = int(os.getenv("DIFY_PORT", "8099"))
 CONVERSOR_PORT = int(os.getenv("CONVERSOR_PORT", "8098"))
+SAFETYCHEM_PORT = int(os.getenv("SAFETYCHEM_PORT", "8096"))
 os.environ.setdefault("DATA_DIR", tempfile.mkdtemp(prefix="agente-pu-"))
 os.environ.setdefault("COOKIE_SECURE", "false")
 os.environ.setdefault("SECRET_KEY", "chave-so-para-teste-local-com-32-bytes")
@@ -27,6 +28,12 @@ os.environ.setdefault("CONVERSOR_URL", f"http://127.0.0.1:{CONVERSOR_PORT}")
 os.environ.setdefault("CONHECIMENTO_INTERVALO_STATUS", "0.2")
 os.environ.setdefault("DOCUMENTOS_CHAVE", "chave-da-ferramenta-de-teste")
 os.environ.setdefault("SAFETYCHEM_ROBO_CHAVE", "chave-do-robo-de-teste")
+os.environ.setdefault("SAFETYCHEM_URL", f"http://127.0.0.1:{SAFETYCHEM_PORT}")
+os.environ.setdefault("SAFETYCHEM_USUARIO", "robo.teste")
+os.environ.setdefault("SAFETYCHEM_SENHA", "senha-teste")
+os.environ.setdefault("SAFETYCHEM_HORARIO", "")      # nos testes, só pelo botão
+os.environ.setdefault("SAFETYCHEM_PAUSA", "0")
+os.environ.setdefault("SAFETYCHEM_POR_PAGINA", "2")  # força a paginação com poucos documentos
 
 
 def _pasta_documentos() -> str:
@@ -61,6 +68,7 @@ from ldap3 import MOCK_SYNC  # noqa: E402
 
 import fake_conversor  # noqa: E402
 import fake_dify  # noqa: E402
+import fake_safetychem  # noqa: E402
 import mock_ldap  # noqa: E402
 
 os.environ.setdefault("DIFY_API_KEY", fake_dify.CHAVE_PU)
@@ -75,8 +83,10 @@ threading.Thread(target=lambda: uvicorn.run(fake_dify.app, host="127.0.0.1", por
                  daemon=True).start()
 threading.Thread(target=lambda: uvicorn.run(fake_conversor.app, host="127.0.0.1", port=CONVERSOR_PORT,
                                            log_level="warning"), daemon=True).start()
+threading.Thread(target=lambda: uvicorn.run(fake_safetychem.app, host="127.0.0.1", port=SAFETYCHEM_PORT,
+                                           log_level="warning"), daemon=True).start()
 # a migração consulta o Dify na subida: espera o Dify falso aceitar conexões
-for porta in (DIFY_PORT, CONVERSOR_PORT):
+for porta in (DIFY_PORT, CONVERSOR_PORT, SAFETYCHEM_PORT):
     for _ in range(50):
         try:
             socket.create_connection(("127.0.0.1", porta), timeout=0.2).close()

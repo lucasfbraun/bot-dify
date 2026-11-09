@@ -10,19 +10,24 @@ aqui, ele PREVALECE sobre as FISPQs antigas da pasta de documentos e do catálog
 - O agente consulta pela ferramenta dados_oficiais_safetychem (GET /api/ferramentas/safetychem, mesma chave
   DOCUMENTOS_CHAVE), que separa a resposta por documento: ficha técnica, FDS (antiga FISPQ) e ficha de emergência.
 """
+import asyncio
 import hashlib
 import json
 import logging
 import os
 import re
 import secrets
+import time
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta
 from urllib.parse import quote, unquote
+
+import httpx
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
 
-from . import conhecimento, db, documentos
+from . import conhecimento, db, documentos, tempo
 from .config import settings
 from .security import exigir_admin, usuario_atual
 
@@ -417,7 +422,15 @@ SECOES_FICHA = [  # (chave, título como aparece na ficha, sem acento e em minú
 RX_LIXO_FICHA = re.compile(  # cabeçalho e rodapé repetidos em toda página
     r"^(vers[aã]o:?\s*\d*|data:?\s*[\d/]*|ficha t[eé]cnica|produto:.*|as informa[cç][oõ]es aqui apresentadas.*|"
     r"em condi[cç][oõ]es controladas.*|deste documento pode ser reproduzido.*|sujeita o infrator.*|rua:.*)$", re.I)
-RX_ARQUIVO_FICHA = re.compile(r"ficha[ _]t[eé]cnica[ _-]+(.+?)[ _-]+v(\d+)[ _-]+(\d{8,14})", re.I)
+RX_ARQUIVO_FICHA = re.compile(r"ficha[ _]t[eé]cnica[ _-]+(.+?)[ _-]+v(\d+)[ _-]+([\d.]{8,20})", re.I)
+
+
+def ordem_do_arquivo(nome_arquivo: str, data: str = "") -> str:
+    """Chave para comparar versões: "0004|20250224111427" (versão, depois carimbo de publicação)."""
+    m = RX_ARQUIVO_FICHA.search(nome_arquivo or "")
+    versao = m.group(2) if m else "0"
+    carimbo = re.sub(r"\D", "", m.group(3)).ljust(14, "0")[:14] if m else ""
+    return f"{int(versao):04d}|{carimbo or data.replace('-', '')}"
 
 
 def _dir_fichas() -> str:
@@ -463,7 +476,7 @@ def ler_ficha(texto: str, nome_arquivo: str) -> dict:
     versao = m_ver.group(1) if m_ver else (m_arq.group(2) if m_arq else "")
     m_data = re.search(r"Data:\s*(\d{2})/(\d{2})/(\d{4})", texto or "")
     data = f"{m_data.group(3)}-{m_data.group(2)}-{m_data.group(1)}" if m_data else ""
-    carimbo = m_arq.group(3) if m_arq else ""
+    carimbo = re.sub(r"\D", "", m_arq.group(3)).ljust(14, "0")[:14] if m_arq else ""
     secoes, atual, descricao = {}, None, []
     for linha in (texto or "").splitlines():
         linha = linha.strip()
@@ -483,18 +496,19 @@ def ler_ficha(texto: str, nome_arquivo: str) -> dict:
             "secoes": {k: "\n".join(v).strip() for k, v in secoes.items() if v}, "texto": (texto or "").strip()}
 
 
-async def importar_ficha(dados: bytes, nome_arquivo: str, autor: str) -> dict:
+async def importar_ficha(dados: bytes, nome_arquivo: str, autor: str, nome_produto: str = "") -> dict:
     if not dados.startswith(b"%PDF"):
         raise HTTPException(415, "A ficha técnica precisa ser o PDF publicado no SafetyChem.")
     if not settings.CONVERSOR_URL:
         raise HTTPException(503, "O conversor de arquivos não está configurado: não dá para ler o PDF.")
     try:
-        _, info = await conhecimento._conversor(dados, nome_arquivo or "ficha.pdf", ocr=False)
-        if len(info["texto"].strip()) < 200:  # PDF escaneado: tenta com OCR
-            _, info = await conhecimento._conversor(dados, nome_arquivo or "ficha.pdf", ocr=True)
+        # com OCR: em PDF digital o conversor lê só o que é imagem (ex.: fórmulas) e mantém o texto que já existe
+        _, info = await conhecimento._conversor(dados, nome_arquivo or "ficha.pdf", ocr=True)
     except conhecimento.ErroProcessamento as e:
         raise HTTPException(422, str(e))
     f = ler_ficha(info["texto"], nome_arquivo)
+    if nome_produto:  # o nome comercial do SafetyChem (sincronização) vale mais que o lido do PDF
+        f["nome"] = nome_produto
     if not f["nome"]:
         raise HTTPException(422, "Não achei o nome do produto na ficha (linha \"Produto:\").")
     chave = _chave(f["nome"])
@@ -555,3 +569,168 @@ def baixar_ficha(doc_id: str, user: dict = Depends(usuario_atual)):
     nome = t["arquivo_nome"] if t["arquivo_nome"].lower().endswith(".pdf") else f"{t['arquivo_nome']}.pdf"
     return FileResponse(caminho, media_type="application/pdf", headers={
         "Content-Disposition": f"inline; filename*=UTF-8''{quote(nome)}", "Cache-Control": "private, no-store"})
+
+
+# ------------------------------------------------------------------ sincronização automática com o SafetyChem
+# Entra com o usuário do robô, lista as fichas técnicas publicadas (a mesma pesquisa da tela Documentos > Documentos
+# publicados) e baixa SÓ as novas ou com versão nova, pelo link público do documento. Roda todo dia no horário
+# SAFETYCHEM_HORARIO e pelo botão "Sincronizar agora". Nada passa por máquina de usuário: o PDF vai direto do
+# SafetyChem para a plataforma.
+DOC_FICHA_TECNICA = 49           # tipo "Ficha Técnica" no SafetyChem
+POR_PAGINA = int(os.getenv("SAFETYCHEM_POR_PAGINA", "500"))  # como na tela: 500 por página, uma de cada vez
+PAUSA_ENTRE_DOWNLOADS = float(os.getenv("SAFETYCHEM_PAUSA", "0.5"))
+_sinc: dict = {"tarefa": None}
+
+
+class ErroSafetychem(Exception):
+    pass
+
+
+def sincronizacao_configurada() -> bool:
+    return bool(settings.SAFETYCHEM_USUARIO and settings.SAFETYCHEM_SENHA)
+
+
+def _situacao_sinc() -> dict:
+    v = db.get_meta("safetychem_sincronizacao")
+    return json.loads(v) if v else {}
+
+
+def _gravar_sinc(d: dict) -> None:
+    db.set_meta("safetychem_sincronizacao", json.dumps(d, ensure_ascii=False))
+
+
+async def _listar_fichas(c: httpx.AsyncClient) -> list[dict]:
+    r = await c.post("/Login/Login?Area=Default", json={
+        "Password": hashlib.md5(settings.SAFETYCHEM_SENHA.encode()).hexdigest(), "PasswordReset": "", "URAAD": False,
+        "Username": settings.SAFETYCHEM_USUARIO, "EhResetSenha": False})
+    if r.status_code != 200 or not (r.json() if "json" in r.headers.get("content-type", "") else {}).get("LoginValido"):
+        raise ErroSafetychem("O SafetyChem recusou o usuário/senha do robô (SAFETYCHEM_USUARIO/SAFETYCHEM_SENHA).")
+    modelo = (await c.get("/NewSafetyChem/DocumentoPublicado/GetModel")).json()["model"]
+    for k in ("EmpresaDocumentos", "EmpresaUnidades", "EmpresasCombo"):
+        modelo[k] = None
+    dp = modelo["DadosPesquisa"]
+    dp.update({"TipoDocumento": DOC_FICHA_TECNICA, "IdiomaPesquisaId": 0, "VinculoId": modelo.get("EmpresaLogadaId"),
+               "Areas": [], "CodigosEmpresa": [], "FiltrosPesquisa": [], "FiltroPesquisaDinamico": False,
+               "AplicaPaginacao": True, "PreencherColunasGrid": True,
+               "UsuarioColunasGrid": modelo.get("UsuarioColunasGrid") or []})
+    todas = []
+    for pagina in range(1, 41):  # uma página de 500 por vez
+        dp["Paginacao"] = {"page": pagina, "rowsPerPage": POR_PAGINA, "totalPages": 0, "sortField": "", "asc": True,
+                           "totalRegistros": 0, "rowsPerPageOptions": [10, 20, 50, 100, 200, 500]}
+        r = await c.post("/NewSafetyChem/DocumentoPublicado/GetDocumentosPublicados", json=modelo)
+        docs = (r.json().get("model") or {}).get("DocumentosPublicados") or []
+        todas += docs
+        if len(docs) < POR_PAGINA:
+            break
+    out = []
+    for d in todas:
+        nome = ((d.get("Produto") or {}).get("ProdutoInformacaoIdioma") or {}).get("NomeComercial") or ""
+        if d.get("DocumentoPublicadoGUID") and nome and d.get("UltimaVersao", True) and d.get("Ativo", True):
+            out.append({"nome": nome.strip(), "arquivo": d.get("NomeArquivo") or f"{nome}.pdf",
+                        "guid": d["DocumentoPublicadoGUID"], "data": (d.get("DataPublicacao") or "")[:10]})
+    return out
+
+
+async def sincronizar_fichas(autor: str = "robo-safetychem") -> dict:
+    inicio = time.time()
+    sit = {"situacao": "rodando", "inicio": db.agora(), "por": autor, "listadas": 0, "a_baixar": 0, "processadas": 0,
+           "novas": 0, "atualizadas": 0, "sem_alteracao": 0, "mais_antigas": 0, "erros": []}
+    _gravar_sinc(sit)
+    try:
+        async with httpx.AsyncClient(base_url=settings.SAFETYCHEM_URL, timeout=httpx.Timeout(120, connect=20),
+                                     follow_redirects=True, headers={"User-Agent": "agente-grupo-flexivel/1.0",
+                                                                     "Accept": "application/json, text/plain, */*"}) as c:
+            lista = await _listar_fichas(c)
+            sit["listadas"] = len(lista)
+            atuais = {r["chave"]: r for r in fichas_todas()}
+            arquivos = {r["arquivo_nome"] for r in atuais.values()}
+            pendentes = []
+            for d in lista:
+                atual = atuais.get(_chave(d["nome"]))
+                if d["arquivo"] in arquivos or (atual and atual["ordem"] >= ordem_do_arquivo(d["arquivo"], d["data"])):
+                    sit["sem_alteracao"] += 1
+                else:
+                    pendentes.append(d)
+            sit["a_baixar"] = len(pendentes)
+            _gravar_sinc(sit)
+            for d in pendentes:
+                try:
+                    if not re.fullmatch(r"[0-9a-fA-F-]{32,40}", d["guid"]):
+                        raise ErroSafetychem("identificador do documento inválido")
+                    r = await c.get(f"/Doc?{d['guid']}")  # link público do documento publicado
+                    if r.status_code != 200 or not r.content.startswith(b"%PDF"):
+                        raise ErroSafetychem(f"download devolveu {r.status_code}")
+                    res = await importar_ficha(r.content, d["arquivo"], autor, nome_produto=d["nome"])
+                    chave_res = {"nova": "novas", "atualizada": "atualizadas", "sem_alteracao": "sem_alteracao",
+                                 "mais_antiga": "mais_antigas"}[res["resultado"]]
+                    sit[chave_res] += 1
+                except (ErroSafetychem, HTTPException, httpx.HTTPError) as e:
+                    detalhe = getattr(e, "detail", None) or str(e) or type(e).__name__
+                    sit["erros"].append(f"{d['nome']}: {detalhe}"[:200])
+                sit["processadas"] += 1
+                if sit["processadas"] % 5 == 0:
+                    _gravar_sinc(sit)
+                await asyncio.sleep(PAUSA_ENTRE_DOWNLOADS)
+        sit["situacao"] = "ok" if not sit["erros"] else "ok_com_erros"
+    except (ErroSafetychem, httpx.HTTPError, ValueError, KeyError) as e:
+        sit["situacao"] = "erro"
+        sit["mensagem"] = str(e) if isinstance(e, ErroSafetychem) else f"Falha ao falar com o SafetyChem ({type(e).__name__})."
+        log.warning("sincronização SafetyChem falhou: %s", e)
+    sit["erros"] = sit["erros"][:30]
+    sit["fim"] = db.agora()
+    sit["segundos"] = round(time.time() - inicio)
+    _gravar_sinc(sit)
+    db.auditar(autor, "sincronizar_safetychem", "", f"{sit['situacao']}: {sit['listadas']} listadas, {sit['novas']} novas, "
+               f"{sit['atualizadas']} atualizadas, {len(sit['erros'])} erros")
+    log.info("sincronização SafetyChem: %s", {k: v for k, v in sit.items() if k != "erros"})
+    return sit
+
+
+def iniciar_sincronizacao(autor: str) -> bool:
+    """Dispara em segundo plano (uma por vez). Devolve False se já há uma rodando."""
+    t = _sinc["tarefa"]
+    if t and not t.done():
+        return False
+    _sinc["tarefa"] = asyncio.create_task(sincronizar_fichas(autor))
+    return True
+
+
+def _proxima_execucao(agora: datetime) -> datetime | None:
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", settings.SAFETYCHEM_HORARIO.strip())
+    if not m:
+        return None
+    alvo = agora.replace(hour=int(m.group(1)), minute=int(m.group(2)), second=0, microsecond=0)
+    return alvo if alvo > agora else alvo + timedelta(days=1)
+
+
+async def agendador() -> None:
+    """Roda a sincronização todo dia no horário configurado (enquanto a plataforma estiver no ar)."""
+    if not sincronizacao_configurada():
+        return
+    sit = _situacao_sinc()
+    if sit.get("situacao") == "rodando":  # o container reiniciou no meio: marca e segue
+        _gravar_sinc({**sit, "situacao": "erro", "mensagem": "Interrompida por reinício da plataforma."})
+    while True:
+        agora = datetime.now(tempo.FUSO)
+        proxima = _proxima_execucao(agora)
+        if not proxima:
+            return
+        await asyncio.sleep(max(1.0, (proxima - agora).total_seconds()))
+        iniciar_sincronizacao("robo-safetychem")
+        await asyncio.sleep(61)
+
+
+@router.post("/api/admin/safetychem/sincronizar")
+async def sincronizar_agora(admin: dict = Depends(exigir_admin)):
+    if not sincronizacao_configurada():
+        raise HTTPException(400, "Sincronização não configurada: defina SAFETYCHEM_USUARIO e SAFETYCHEM_SENHA no .env.")
+    if not iniciar_sincronizacao(admin["username"]):
+        raise HTTPException(409, "Já há uma sincronização em andamento.")
+    return {"iniciada": True}
+
+
+@router.get("/api/admin/safetychem/sincronizacao")
+def situacao_sincronizacao(admin: dict = Depends(exigir_admin)):
+    proxima = _proxima_execucao(datetime.now(tempo.FUSO)) if sincronizacao_configurada() else None
+    return {"configurada": sincronizacao_configurada(), "horario": settings.SAFETYCHEM_HORARIO,
+            "proxima": proxima.isoformat() if proxima else None, **_situacao_sinc()}

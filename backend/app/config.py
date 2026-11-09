@@ -67,6 +67,11 @@ class Settings:
     DOCUMENTOS_URL_FERRAMENTA = os.getenv("DOCUMENTOS_URL_FERRAMENTA", "").rstrip("/")  # URL que o Dify usa
     # Robô (RPA) do SafetyChem: chave com que ele envia o XML e as fichas técnicas baixadas (vazia = só o admin)
     SAFETYCHEM_ROBO_CHAVE = os.getenv("SAFETYCHEM_ROBO_CHAVE", "")
+    # Sincronização automática das fichas técnicas com o SafetyChem (usuário próprio do robô; vazio = desligada)
+    SAFETYCHEM_URL = os.getenv("SAFETYCHEM_URL", "https://www.safetychem.com.br").rstrip("/")
+    SAFETYCHEM_USUARIO = os.getenv("SAFETYCHEM_USUARIO", "")
+    SAFETYCHEM_SENHA = os.getenv("SAFETYCHEM_SENHA", "")
+    SAFETYCHEM_HORARIO = os.getenv("SAFETYCHEM_HORARIO", "02:30")   # todo dia, no fuso FUSO_HORARIO; vazio = só manual
 
     # Proteção de login
     LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "5"))

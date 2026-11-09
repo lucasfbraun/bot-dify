@@ -423,9 +423,25 @@ A ficha técnica (o boletim: aplicação, especificações, tempos de reatividad
 - **Fica sempre a versão mais recente** de cada produto: compara a versão ("Versão: 04") e a data/carimbo de publicação (do nome do arquivo, ex.: `Ficha Tecnica_FLEXX AG 2032_V04_20250224111427.pdf`). Mesmo PDF = sem alteração; versão mais antiga = ignorada (o resumo avisa); mais nova = substitui (o PDF anterior é apagado).
 - O agente recebe a ficha por seção em `dados_oficiais_safetychem` (documento `ficha_tecnica`), e a `documentos_para_baixar` entrega o **PDF oficial** no lugar do boletim antigo da pasta. O link é estável por produto e sempre abre a versão mais recente; só funciona para quem está logado e cada download vai para a auditoria.
 
-### Robô (RPA)
+### Sincronização automática das fichas técnicas (robô)
 
-O robô entra no SafetyChem, baixa a exportação XML e os PDFs publicados das fichas técnicas e envia para as mesmas rotas da importação manual (`/api/admin/safetychem/importar` e `/api/admin/safetychem/fichas`), identificado pela chave `SAFETYCHEM_ROBO_CHAVE` (cabeçalho `Authorization: Bearer ...`). O cartão do SafetyChem mostra o último envio (quem, quando, resultado).
+A própria plataforma faz o papel do robô, sem navegador e sem container extra:
+
+1. Entra no SafetyChem com o usuário do robô (`SAFETYCHEM_USUARIO` / `SAFETYCHEM_SENHA`).
+2. Lista as fichas técnicas publicadas: é a mesma pesquisa da tela **Documentos → Documentos publicados → Documento: Ficha Técnica**, 500 por página, uma página por vez.
+3. Compara com o que já está guardado (versão e carimbo do arquivo) e **baixa só as novas ou com versão nova**, pelo link público de cada documento (`/Doc?<GUID>`). O PDF vai direto do SafetyChem para a plataforma, no servidor; nada passa pela máquina de ninguém.
+4. Lê cada PDF (com OCR, para pegar também o que está como imagem, como fórmulas) e guarda só a versão mais recente.
+
+Roda **todo dia** no horário `SAFETYCHEM_HORARIO` (padrão 02:30, no fuso `FUSO_HORARIO`) e pelo botão **Sincronizar agora** (Administração → Agentes, cartão do SafetyChem), que mostra o andamento e o resumo da última (quantas no SafetyChem, novas, atualizadas, sem alteração, erros). Na **primeira** vez, todas as fichas são baixadas e lidas com OCR, o que leva um tempo (dezenas de minutos para ~600 fichas); depois, só o que mudou, em segundos. Se a senha do robô estiver errada, a situação mostra o erro.
+
+O envio manual de PDFs continua disponível como plano B. A chave `SAFETYCHEM_ROBO_CHAVE` permite que um sistema externo envie o XML e as fichas para as mesmas rotas da importação manual (`/api/admin/safetychem/importar` e `/api/admin/safetychem/fichas`, cabeçalho `Authorization: Bearer ...`).
+
+| Variável | Padrão | Para que serve |
+|---|---|---|
+| `SAFETYCHEM_USUARIO` / `SAFETYCHEM_SENHA` | (vazio) | Usuário próprio do robô no SafetyChem. Vazio = sincronização desligada. |
+| `SAFETYCHEM_HORARIO` | `02:30` | Horário diário da sincronização. Vazio = só pelo botão. |
+| `SAFETYCHEM_URL` | `https://www.safetychem.com.br` | Endereço do SafetyChem. |
+| `SAFETYCHEM_ROBO_CHAVE` | (vazio) | Chave para um sistema externo enviar XML/fichas. |
 
 ### Segredo industrial
 

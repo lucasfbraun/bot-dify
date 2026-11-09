@@ -69,6 +69,7 @@ async def _ciclo(_app):
     conhecimento.retomar()  # envios que ficaram no meio por reinício do container
     if documentos.ativo():
         asyncio.create_task(documentos.indice())  # a primeira busca do agente já encontra o índice pronto
+    asyncio.create_task(safetychem.agendador())  # fichas técnicas do SafetyChem, todo dia no horário configurado
     if not db.list_agentes():
         log.warning("Nenhum agente cadastrado: cadastre em Administração > Agentes.")
     if not os.getenv("SECRET_KEY"):
