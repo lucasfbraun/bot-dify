@@ -375,31 +375,42 @@ st = adm.get("/api/admin/safetychem").json()
 ok(st["produtos"] == 2 and st["ultima_importacao"]["atualizados"] == 1 and st["ultima_importacao"]["por"] == "admin.ti",
    "situação da importação para o admin")
 
-FISPQ = "/api/ferramentas/fds-safetychem"
-ok(anon.get(FISPQ, params={"produto": "AG 2032"}).status_code == 401, "ferramenta da FISPQ sem chave -> 401")
+FISPQ = "/api/ferramentas/safetychem"
+ok(anon.get(FISPQ, params={"produto": "AG 2032"}).status_code == 401, "ferramenta do SafetyChem sem chave -> 401")
 r = anon.get(FISPQ, params={"produto": "ag 2032"}, headers=CHAVE_DOCS)
 fq = r.json()
-p32 = fq["produtos"][0]
-ok(r.status_code == 200 and fq["encontrados"] == 1 and p32["nome"] == "FLEXX AG 2032" and p32["versao"] == "05",
-   "acha a FISPQ oficial pelo nome (versão atualizada)")
-ok(p32["classificacao"]["pictogramas"] == ["09 - Perigo à saúde (silhueta)", "07 - Toxicidade aguda (caveira)"]
-   and p32["classificacao"]["frases_perigo"] == ["Nocivo se ingerido", "Fatal se inalado"], "pictogramas com nome e frases de perigo")
-ok(p32["precaucoes"]["prevencao"] == ["P260 Não inale vapores", "P280 Use luvas de proteção"], "precauções separadas por seção, sem o cabeçalho")
-ok(p32["combate_incendio"]["meios_extincao"].startswith("Meios de extinção adequados: dióxido") and "\\b" not in r.text,
+p32, d32 = fq["produtos"][0], fq["produtos"][0]["fds"]
+ok(r.status_code == 200 and fq["encontrados"] == 1 and p32["nome"] == "FLEXX AG 2032" and d32["versao"] == "05",
+   "acha o produto pelo nome (FDS na versão atualizada)")
+ok(set(p32) >= {"ficha_tecnica", "fds", "ficha_emergencia"} and p32["documentos_disponiveis"] == ["fds", "ficha_emergencia"]
+   and p32["ficha_tecnica"] is None and "boletim" in p32["aviso_ficha_tecnica"],
+   "resposta separada por documento; ficha técnica ainda vazia, com aviso para usar o boletim")
+ok(d32["classificacao"]["pictogramas"] == ["09 - Perigo à saúde (silhueta)", "07 - Toxicidade aguda (caveira)"]
+   and d32["classificacao"]["frases_perigo"] == ["Nocivo se ingerido", "Fatal se inalado"], "pictogramas com nome e frases de perigo")
+ok(d32["precaucoes"]["prevencao"] == ["P260 Não inale vapores", "P280 Use luvas de proteção"], "precauções separadas por seção, sem o cabeçalho")
+ok(d32["combate_incendio"]["meios_extincao"].startswith("Meios de extinção adequados: dióxido") and "\\b" not in r.text,
    "texto sem a marcação do SafetyChem (\\b ... \\b0)")
-ok(p32["propriedades"]["densidade_absoluta"] == "1230 kg/m³ a 25 °C" and p32["propriedades"]["ponto_de_fulgor"] == "> 180 °C",
+ok(d32["propriedades"]["densidade_absoluta"] == "1230 kg/m³ a 25 °C" and d32["propriedades"]["ponto_de_fulgor"] == "> 180 °C",
    "propriedades físicas formatadas")
-ok(p32["transporte"]["classificado_para_transporte"] is False and p32["transporte"]["numero_onu"] == "",
+ok(d32["transporte"]["classificado_para_transporte"] is False and d32["transporte"]["numero_onu"] == "",
    "ONU 0 = não classificado para transporte")
-ok("Segredo industrial 1: 18,75 - 31,25%" in p32["composicao_secao3_publicada"], "composição como publicada na Seção 3")
-ok("SECRETO" not in r.text and "11111-11-1" not in r.text and "22222-22-2" not in r.text and p32["ingredientes_publicos"] == [],
+ok("Segredo industrial 1: 18,75 - 31,25%" in d32["composicao_secao3_publicada"], "composição como publicada na Seção 3")
+ok("SECRETO" not in r.text and "11111-11-1" not in r.text and "22222-22-2" not in r.text and d32["ingredientes_publicos"] == [],
    "ingredientes em segredo industrial NUNCA saem")
-ok(p32["link_markdown_fispq"] == "[📄 FDS FLEXX AG 2032 (SafetyChem, versão 05)](https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032)",
+ok(d32["link_markdown"] == "[📄 FDS FLEXX AG 2032 (SafetyChem, versão 05)](https://safetychem.com.br/Doc?00000000-aaaa-bbbb-cccc-000000002032)",
    "link da FISPQ oficial pronto para a resposta")
-p47 = anon.get(FISPQ, params={"produto": "FLEXX® AG 2047"}, headers=CHAVE_DOCS).json()["produtos"][0]
+p47 = anon.get(FISPQ, params={"produto": "FLEXX® AG 2047"}, headers=CHAVE_DOCS).json()["produtos"][0]["fds"]
 ok(p47["transporte"]["numero_onu"] == "2810" and p47["transporte"]["rotulos_risco"] == ["Classe 6.1 - Tóxico"]
    and p47["ingredientes_publicos"] == [{"nome": "INGREDIENTE PUBLICO GAMA", "cas": "33333-33-3", "faixa": "1 - 5%"}]
    and "DELTA" not in json.dumps(p47), "transporte e ingrediente público; o secreto do mesmo produto fica de fora")
+r = anon.get(FISPQ, params={"produto": "AG 2047", "documento": "ficha de emergência"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(set(r) == {"nome", "nome_quimico", "importado_em", "documentos_disponiveis", "ficha_emergencia"}
+   and r["ficha_emergencia"]["transporte"]["numero_onu"] == "2810" and "0000000020fe" in r["ficha_emergencia"]["link_markdown"],
+   "documento=ficha de emergência: vem só ela, com transporte e link próprio")
+r = anon.get(FISPQ, params={"produto": "AG 2047", "documento": "FISPQ"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok("fds" in r and "ficha_emergencia" not in r and "ficha_tecnica" not in r, "documento=FISPQ: vem só a FDS")
+r = anon.get(FISPQ, params={"produto": "AG 2047", "documento": "ficha técnica"}, headers=CHAVE_DOCS).json()["produtos"][0]
+ok(r["ficha_tecnica"] is None and "aviso_ficha_tecnica" in r and "fds" not in r, "documento=ficha técnica: avisa que ainda vem do boletim")
 r = anon.get(FISPQ, params={"produto": "HR 3530"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 0 and "catálogo" in r["orientacao"], "produto fora do SafetyChem: orienta usar a FISPQ antiga com aviso")
 r = anon.get(FERR, params={"produto": "AG 2047"}, headers=CHAVE_DOCS).json()
@@ -415,7 +426,7 @@ ok([d["arquivo"] for d in r["documentos"]] == ["FDS FLEXX AG 2047 (SafetyChem, v
 r = anon.get(FERR, params={"produto": "AG 2032"}, headers=CHAVE_DOCS).json()
 ok(r["encontrados"] == 1 and r["documentos"][0]["fonte"].startswith("SafetyChem"), "produto só no SafetyChem: entrega a FISPQ oficial")
 esq = anon.get("/api/ferramentas/openapi.json").json()
-ok(esq["paths"][FISPQ]["get"]["operationId"] == "fds_safetychem", "esquema OpenAPI inclui a ferramenta da FDS")
+ok(esq["paths"][FISPQ]["get"]["operationId"] == "dados_oficiais_safetychem", "esquema OpenAPI inclui a ferramenta do SafetyChem")
 
 # ------------------------------------------------------------------ liberar e revogar
 secao("liberar e revogar agentes")

@@ -410,7 +410,7 @@ O SafetyChem é a fonte **oficial e atualizada** das FISPQs/FDS e fichas de emer
 
 ### O que o agente recebe
 
-- Ferramenta **fds_safetychem** (mesma chave e mesmo esquema OpenAPI da ferramenta de documentos): classificação (palavra de advertência, pictogramas com o nome, frases de perigo), precauções por seção (prevenção, resposta à emergência, armazenamento, disposição), EPI, primeiros socorros, combate a incêndio, vazamento, manuseio e incompatibilidades, propriedades (aspecto, densidade, ponto de fulgor, estabilidade), diagrama de Hommel, transporte (ONU, classe, grupo de embalagem, rótulos de risco; ONU 0 = não classificado para transporte), ficha de emergência, composição **como publicada na Seção 3** e o link da FISPQ oficial.
+- Ferramenta **dados_oficiais_safetychem** (mesma chave e mesmo esquema OpenAPI da ferramenta de documentos), com a resposta **separada por documento** (`ficha_tecnica`, `fds`, `ficha_emergencia`) e o parâmetro opcional `documento` para pedir só um deles. A ficha técnica ainda vem vazia (o SafetyChem não a exporta no XML atual) e a resposta avisa para usar o boletim da pasta. Conteúdo da FDS: classificação (palavra de advertência, pictogramas com o nome, frases de perigo), precauções por seção (prevenção, resposta à emergência, armazenamento, disposição), EPI, primeiros socorros, combate a incêndio, vazamento, manuseio e incompatibilidades, propriedades (aspecto, densidade, ponto de fulgor, estabilidade), diagrama de Hommel, transporte (ONU, classe, grupo de embalagem, rótulos de risco; ONU 0 = não classificado para transporte), ficha de emergência, composição **como publicada na Seção 3** e o link da FISPQ oficial.
 - A ferramenta **documentos_para_baixar** passa a entregar a **FISPQ e a ficha de emergência oficiais** (links do SafetyChem) no lugar das versões antigas da pasta. Os boletins técnicos continuam vindo da pasta.
 - Os textos chegam limpos (sem as marcações `\b`, `\super` e os separadores `#` do SafetyChem).
 
@@ -422,8 +422,8 @@ A exportação traz os ingredientes reais (nome, CAS e concentração) marcados 
 
 1. Atualize o esquema da ferramenta **Documentos de produto** (Integrações → Ferramentas → Swagger API as Tool): cole de novo a saída de
    `curl -s http://127.0.0.1:8090/api/ferramentas/openapi.json | sed 's#http://127.0.0.1:8090#http://10.100.100.13:8090#'`.
-   Aparece a segunda ferramenta, **fds_safetychem**.
-2. Adicione **fds_safetychem** no nó Agent dos agentes que respondem sobre segurança e inclua na instrução que ela prevalece sobre as FISPQs do catálogo.
+   Aparece a segunda ferramenta, **dados_oficiais_safetychem**.
+2. Adicione **dados_oficiais_safetychem** no nó Agent dos agentes que respondem sobre segurança e inclua na instrução que ela prevalece sobre as FISPQs do catálogo.
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

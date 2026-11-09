@@ -7,7 +7,8 @@ aqui, ele PREVALECE sobre as FISPQs antigas da pasta de documentos e do catálog
   Reimportar atualiza os produtos alterados e inclui os novos, sem duplicar (chave = nome comercial).
 - SEGREDO INDUSTRIAL: os ingredientes marcados como segredo industrial (nome, CAS e concentração reais) são
   descartados na importação e nunca ficam guardados. A composição que fica é a da Seção 3 publicada na FISPQ.
-- O agente consulta pela ferramenta GET /api/ferramentas/fds-safetychem (mesma chave DOCUMENTOS_CHAVE).
+- O agente consulta pela ferramenta dados_oficiais_safetychem (GET /api/ferramentas/safetychem, mesma chave
+  DOCUMENTOS_CHAVE), que separa a resposta por documento: ficha técnica, FDS (antiga FISPQ) e ficha de emergência.
 """
 import json
 import logging
@@ -316,31 +317,56 @@ def situacao(admin: dict = Depends(exigir_admin)):
 
 
 # ------------------------------------------------------------------ ferramenta para o agente (Dify)
-@router.get("/api/ferramentas/fds-safetychem")
-async def ferramenta_fispq(request: Request, produto: str = ""):
-    """Dados da FISPQ/FDS oficial e atualizada do produto (SafetyChem). Prevalece sobre FISPQs antigas."""
+# campos guardados de cada documento (a importação guarda tudo junto; a ferramenta separa por documento)
+CAMPOS_FDS = ("uso_recomendado", "mistura", "produto_perigoso", "cas_produto", "classificacao", "precaucoes",
+              "composicao_secao3_publicada", "ingredientes_publicos", "primeiros_socorros", "combate_incendio",
+              "vazamento", "manuseio_armazenamento", "epi", "propriedades", "diagrama_hommel", "transporte")
+DOCUMENTOS = {"boletim": "ficha_tecnica", "fispq": "fds", "ficha de emergencia": "ficha_emergencia"}
+
+
+def _por_documento(p: dict, importado_em: str, documento: str) -> dict:
+    fds = {"versao": p.get("versao", ""), **{k: p[k] for k in CAMPOS_FDS if k in p}}
+    if p.get("url_fispq"):
+        fds["link_markdown"] = f"[📄 {_rotulo_fispq(p)}]({p['url_fispq']})"
+    fe = dict(p.get("ficha_emergencia") or {})
+    if fe:
+        fe["transporte"] = p.get("transporte", {})
+        if p.get("url_ficha_emergencia"):
+            fe["link_markdown"] = f"[📄 Ficha de emergência {p['nome']} (SafetyChem)]({p['url_ficha_emergencia']})"
+    docs = {"ficha_tecnica": p.get("ficha_tecnica") or None, "fds": fds, "ficha_emergencia": fe or None}
+    out = {"nome": p["nome"], "nome_quimico": p.get("nome_quimico", ""), "importado_em": importado_em,
+           "documentos_disponiveis": [k for k, v in docs.items() if v]}
+    pedido = DOCUMENTOS.get(documentos.tipo_canonico(documento)) if documento else None
+    for k, v in docs.items():
+        if pedido is None or k == pedido:
+            out[k] = v
+    if out.get("ficha_tecnica", 1) is None:
+        out["aviso_ficha_tecnica"] = ("A ficha técnica deste produto ainda não vem do SafetyChem: use o boletim "
+                                      "técnico do catálogo/pasta.")
+    return out
+
+
+@router.get("/api/ferramentas/safetychem")
+async def ferramenta_safetychem(request: Request, produto: str = "", documento: str = ""):
+    """Dados OFICIAIS e atualizados do produto no SafetyChem, separados por documento: ficha técnica, FDS
+    (antiga FISPQ) e ficha de emergência. Prevalecem sobre a documentação antiga do catálogo e da pasta."""
     documentos._checar_chave(request)
-    produto = produto.strip()[:120]
+    produto, documento = produto.strip()[:120], documento.strip()[:60]
     if not documentos.normalizar(produto):
         raise HTTPException(400, "Informe o produto (ex.: AG 2032).")
     achados = buscar(produto)
     if not achados:
         sugestoes = documentos.parecidos(_itens_busca(), produto)
         return {"encontrados": 0, "produtos": [], "produtos_parecidos": sugestoes,
-                "orientacao": "Este produto não está no SafetyChem. Use a FISPQ/FDS do catálogo, avisando que pode "
-                              "estar desatualizada." + (" Ou pergunte se o usuário quis dizer um destes produtos."
-                                                  if sugestoes else "")}
-    produtos = []
-    for i in achados:
-        p = dict(i["_dados"])
-        p["importado_em"] = i["_importado_em"]
-        if p.get("url_fispq"):
-            p["link_markdown_fispq"] = f"[📄 {_rotulo_fispq(p)}]({p['url_fispq']})"
-        produtos.append(p)
-    return {"encontrados": len(produtos), "produtos": produtos,
-            "orientacao": "FDS OFICIAL e atualizada (SafetyChem, modelo ABNT NBR 14725:2023). Prevalece sobre as "
-                          "FISPQs/FDS antigas do catálogo e da pasta: em caso de diferença, use esta e avise que o "
-                          "documento antigo está desatualizado. Não vale para boletins técnicos (aplicação e "
-                          "propriedades de uso continuam vindo do boletim). Cite \"FDS SafetyChem, versão <versao>\". "
-                          "Para o usuário abrir o "
-                          "documento, use o link_markdown_fispq exatamente como veio."}
+                "orientacao": "Este produto não está no SafetyChem. Use a documentação do catálogo (boletim, "
+                              "FISPQ/FDS), avisando que pode estar desatualizada."
+                              + (" Ou pergunte se o usuário quis dizer um destes produtos." if sugestoes else "")}
+    return {"encontrados": len(achados),
+            "produtos": [_por_documento(i["_dados"], i["_importado_em"], documento) for i in achados],
+            "orientacao": "Documentação OFICIAL e atualizada (SafetyChem). Cada documento vem separado: ficha_tecnica "
+                          "(aplicação e propriedades de uso), fds (segurança: perigos, precauções, EPI, primeiros "
+                          "socorros, transporte; modelo ABNT NBR 14725:2023, antiga FISPQ) e ficha_emergencia "
+                          "(transporte e emergência). Prevalece sobre a documentação antiga do catálogo e da pasta: "
+                          "em caso de diferença, use esta e avise que o documento antigo está desatualizado. Cite o "
+                          "documento e a versão (ex.: \"FDS SafetyChem, versão 04\"). Para o usuário abrir um "
+                          "documento, use o link_markdown dele exatamente como veio."}

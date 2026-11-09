@@ -250,18 +250,20 @@ async def ferramenta_openapi(request: Request):
                                 "ficha de emergencia, certificado. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentos encontrados"}},
-        }}, "/api/ferramentas/fds-safetychem": {"get": {
-            "operationId": "fds_safetychem",
-            "summary": "Dados da FISPQ/FDS OFICIAL e atualizada do produto (SafetyChem/Intertox): classificação, "
-                       "pictogramas, frases de perigo e de precaução, EPI, primeiros socorros, combate a incêndio, "
-                       "vazamento, manuseio, transporte (ONU, classe), ficha de emergência e composição publicada "
-                       "(Seção 3). Prevalece sobre FISPQs antigas. Use em qualquer pergunta de segurança, "
-                       "manuseio, transporte ou descarte de um produto.",
+        }}, "/api/ferramentas/safetychem": {"get": {
+            "operationId": "dados_oficiais_safetychem",
+            "summary": "Conteúdo OFICIAL e atualizado do produto no SafetyChem (Intertox), separado por documento: "
+                       "ficha_tecnica (aplicação e propriedades de uso), fds (segurança, antiga FISPQ: perigos, "
+                       "pictogramas, precauções, EPI, primeiros socorros, incêndio, vazamento, manuseio, transporte, "
+                       "composição publicada) e ficha_emergencia (transporte e emergência). Prevalece sobre a "
+                       "documentação antiga do catálogo. Use para responder perguntas sobre o produto.",
             "parameters": [
                 {"name": "produto", "in": "query", "required": True, "schema": {"type": "string"},
                  "description": "Nome do produto, ex.: AG 2032, FLEXX HR 3530"},
+                {"name": "documento", "in": "query", "required": False, "schema": {"type": "string"},
+                 "description": "Opcional: ficha_tecnica, fds ou ficha_emergencia. Vazio = todos"},
             ],
-            "responses": {"200": {"description": "FISPQ oficial do produto"}},
+            "responses": {"200": {"description": "Documentação oficial do produto"}},
         }}},
         "components": {"securitySchemes": {"chave": {"type": "http", "scheme": "bearer"}}},
         "security": [{"chave": []}],
