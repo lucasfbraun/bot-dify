@@ -281,6 +281,8 @@ Agentes sem o recurso ligado não mostram o microfone. Se o modelo de voz para t
 Além das sugestões padrão do agente (as perguntas sugeridas do Dify ou as cadastradas pelo admin no agente), **cada pessoa monta os próprios cards**, com as perguntas do dia a dia dela.
 
 - Na tela inicial do chat, **Personalizar atalhos** abre a janela **Meus atalhos** daquele agente: criar (categoria opcional + pergunta), editar, apagar e reordenar (↑ ↓).
+- **Lápis em cada card** (aparece ao passar o mouse; no celular fica sempre visível): no card **seu**, abre a janela já editando aquele atalho; numa **sugestão padrão**, abre com o texto dela no formulário para você criar a sua versão.
+- A janela também lista as **sugestões padrão do agente**, cada uma com **Personalizar**. Elas são do agente (definidas pelo admin) e não mudam para os outros: você cria a sua versão e, se quiser, oculta as padrão.
 - Os atalhos da pessoa aparecem **primeiro**, com uma faixa verde; depois vêm as sugestões padrão. Marcando **Ocultar as sugestões padrão do agente**, ficam só os dela.
 - **Lacunas**: texto entre colchetes vira lacuna. Um card *"Tudo sobre o produto [produto]"* não é enviado direto: o texto vai para a caixa com `[produto]` selecionado, e a pessoa só digita o nome e envia. Sem colchetes, o clique envia a pergunta na hora.
 - São **pessoais**: só a própria pessoa vê e mexe nos seus atalhos, e só nos agentes liberados para ela. Até 12 por agente. Usuário ou agente removido leva os atalhos junto.

@@ -13,7 +13,7 @@
   <link rel="manifest" href="/manifest.webmanifest">
   <link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
   <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
-  <link rel="stylesheet" href="/assets/app.css?v=17">
+  <link rel="stylesheet" href="/assets/app.css?v=18">
 </head>
 <body>
   <!-- ============ LOGIN ============ -->
@@ -473,6 +473,11 @@
       <h3>Meus atalhos <span class="muted" id="atalhos-agente"></span></h3>
       <p class="muted dica">Crie cards com as perguntas que você mais usa neste agente. Eles aparecem primeiro na tela inicial e só você os vê. Use <b>[colchetes]</b> para deixar uma lacuna: em <i>"Tudo sobre o produto [produto]"</i>, o clique coloca o texto na caixa com a lacuna selecionada, e você só digita o nome.</p>
       <div id="atalhos-lista" class="atalhos-lista"></div>
+      <div id="atalhos-padrao-secao" hidden>
+        <h4 class="atalhos-sub">Sugestões padrão do agente</h4>
+        <p class="muted dica">Definidas pelo administrador, valem para todos. Clique em <b>Personalizar</b> para criar a sua versão (o texto vai para o formulário abaixo).</p>
+        <div id="atalhos-padrao" class="atalhos-lista"></div>
+      </div>
       <form id="form-atalho" class="form-atalho" novalidate>
         <h4 id="atalho-form-titulo">Novo atalho</h4>
         <label for="atalho-categoria">Categoria (opcional)</label>
@@ -545,6 +550,6 @@
 
   <script src="/assets/vendor/marked.min.js"></script>
   <script src="/assets/vendor/purify.min.js"></script>
-  <script src="/assets/app.js?v=17" type="module"></script>
+  <script src="/assets/app.js?v=18" type="module"></script>
 </body>
 </html>

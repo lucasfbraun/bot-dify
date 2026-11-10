@@ -561,13 +561,23 @@ function desenharSugestoes() {
   const padrao = estado.atalhos?.ocultar_padrao ? [] : (estado.info?.sugestoes || []).filter((s) => s && s.txt).slice(0, 6);
   box.innerHTML = '';
   for (const s of [...meus, ...padrao]) {
+    const item = document.createElement('div');
+    item.className = 'sugestao-item';
     const b = document.createElement('button');
     b.type = 'button';
     b.className = `sugestao${s.meu ? ' minha' : ''}`;
     b.innerHTML = `${s.cat ? `<b>${esc(s.cat)}</b>` : ''}${esc(s.txt)}`;
     if (s.meu) b.title = 'Meu atalho';
     b.addEventListener('click', () => usarAtalho(s.txt));
-    box.appendChild(b);
+    const ed = document.createElement('button');
+    ed.type = 'button';
+    ed.className = 'sugestao-editar';
+    ed.innerHTML = ICONE.editar;
+    ed.title = s.meu ? 'Editar este atalho' : 'Personalizar (criar a minha versão)';
+    ed.setAttribute('aria-label', ed.title);
+    ed.addEventListener('click', () => (s.meu ? abrirAtalhos({ editar: s }) : abrirAtalhos({ copiar: s })));
+    item.append(b, ed);
+    box.appendChild(item);
   }
   $('#btn-atalhos', boasVindas).hidden = !estado.agenteAtual || !estado.atalhos;
 }
@@ -620,6 +630,7 @@ function desenharListaAtalhos() {
   const cheio = itens.length >= (estado.atalhos?.maximo || 12);
   $('#atalho-salvar').disabled = cheio && !atalhoEditando;
   $('#atalhos-ocultar').checked = !!estado.atalhos?.ocultar_padrao;
+  desenharPadraoNoDialogo();
 }
 
 function limparFormAtalho() {
@@ -632,12 +643,47 @@ function limparFormAtalho() {
   $('#atalho-cancelar').hidden = true;
 }
 
-function abrirAtalhos() {
+/* opcoes.editar: abre editando um atalho meu; opcoes.copiar: abre com uma sugestão padrão no formulário */
+function abrirAtalhos(opcoes = {}) {
   if (!estado.agenteAtual) return;
   $('#atalhos-agente').textContent = `· ${estado.agenteAtual.nome}`;
   limparFormAtalho();
   desenharListaAtalhos();
   $('#dlg-atalhos').showModal();
+  if (opcoes.editar) {
+    const i = (estado.atalhos?.itens || []).findIndex((x) => x.id === opcoes.editar.id);
+    acaoAtalho('editar', opcoes.editar, i);
+  } else if (opcoes.copiar) {
+    personalizarPadrao(opcoes.copiar);
+  }
+}
+
+function personalizarPadrao(s) {
+  limparFormAtalho();
+  $('#atalho-categoria').value = s.cat || '';
+  $('#atalho-texto').value = s.txt;
+  $('#atalho-form-titulo').textContent = 'Novo atalho (a partir da sugestão padrão)';
+  desenharListaAtalhos();
+  const ta = $('#atalho-texto');
+  ta.focus();
+  ta.setSelectionRange(ta.value.length, ta.value.length);
+  ta.scrollIntoView({ block: 'center' });
+}
+
+function desenharPadraoNoDialogo() {
+  const padrao = (estado.info?.sugestoes || []).filter((s) => s && s.txt).slice(0, 6);
+  $('#atalhos-padrao-secao').hidden = !padrao.length;
+  const box = $('#atalhos-padrao');
+  box.innerHTML = '';
+  for (const s of padrao) {
+    const d = document.createElement('div');
+    d.className = 'atalho-linha padrao';
+    d.innerHTML = `<div class="info">${s.cat ? `<b>${esc(s.cat)}</b>` : ''}<span></span></div>
+      <button class="btn btn-texto" type="button">Personalizar</button>`;
+    $('.info span', d).textContent = s.txt;
+    $('button', d).addEventListener('click', () => personalizarPadrao(s));
+    box.appendChild(d);
+  }
 }
 
 async function gravarAtalhos(promessa) {

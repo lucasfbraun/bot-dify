@@ -250,6 +250,20 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--texto-su
 }
 .sugestao:hover { border-color: var(--flex-teal-600); background: var(--superficie-2); }
 .sugestao.minha { border-left: 3px solid var(--flex-verde); }
+.sugestao-item { position: relative; display: grid; }
+.sugestao-item .sugestao { padding-right: 40px; }
+.sugestao-editar {
+  position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; display: grid; place-items: center;
+  border: 0; border-radius: 8px; background: transparent; color: var(--texto-suave); cursor: pointer; opacity: 0;
+  transition: opacity .15s;
+}
+.sugestao-editar svg { width: 16px; height: 16px; fill: currentColor; }
+.sugestao-item:hover .sugestao-editar, .sugestao-editar:focus-visible { opacity: 1; }
+.sugestao-editar:hover { background: rgba(127, 127, 127, .14); color: var(--texto); }
+@media (hover: none) { .sugestao-editar { opacity: .7; } }
+.atalhos-sub { margin: 4px 0 2px; font-size: 15px; }
+.atalho-linha.padrao { background: var(--superficie-2); }
+.atalho-linha.padrao .btn { flex: none; padding: 6px 10px; }
 .btn-link {
   display: inline-flex; align-items: center; gap: 6px; margin: 12px auto 0; padding: 6px 10px; border: 0; border-radius: 8px;
   background: none; color: var(--texto-suave); font: inherit; font-size: 13px; cursor: pointer;
