@@ -558,8 +558,74 @@ st = sincronizar_e_esperar()
 ok(st["situacao"] == "erro" and "usuário/senha" in st["mensagem"], "senha do robô errada: erro claro na situação")
 httpx.post(f"{SC}/teste/senha", json={"senha": "senha-teste"})
 
+secao("SafetyChem: busca nas fichas técnicas por aplicação e propriedades (produto parecido)")
+BUSCA = "/api/ferramentas/safetychem/buscar"
+
+
+def ficha_livre(produto, descricao, aplicacao, especificacoes, extra_secoes=""):
+    texto = (f"Versão: 01\nData: 10/11/2026\nFICHA TÉCNICA\nProduto: {produto}\n{descricao}\nAPLICAÇÃO\n{aplicacao}\n"
+             f"ESPECIFICAÇÕES TÉCNICAS\n{especificacoes}\n{extra_secoes}EMBALAGENS\nTambor 200 Kg")
+    return b"%PDF-1.4\n%FICHA-TESTE\n" + texto.encode("utf-8")
+
+
+ok(enviar_ficha(adm, ficha_livre("FLEXX AD 700", "Adesivo de poliuretano base solvente.",
+                                 "Colagem de solados na fabricação de calçados.", "Viscosidade (25°C) cP 2000 - 3000\nSólidos % 20"),
+                "Ficha Tecnica_FLEXX AD 700_V01_20261110100000.pdf").json()["resultado"] == "nova", "(ficha de um adesivo)")
+ok(enviar_ficha(adm, ficha_livre("FLEXX ES 500", "Sistema de poliuretano para espuma flexível de alta resiliência.",
+                                 "Colchões e assentos automotivos moldados.", "Densidade aparente kg/m³ 45 - 55",
+                                 "CARACTERÍSTICAS E VANTAGENS\nConforto e durabilidade. Baixa emissão.\n"),
+                "Ficha Tecnica_FLEXX ES 500_V01_20261110100000.pdf").json()["resultado"] == "nova", "(ficha de um sistema de espuma)")
+
+ok(anon.get(BUSCA, params={"texto": "adesivo"}).status_code == 401, "busca sem chave -> 401")
+ok(anon.get(BUSCA, params={"texto": "adesivo"}, headers={"Authorization": "Bearer errada"}).status_code == 401, "busca com chave errada -> 401")
+ok(anon.get(BUSCA, params={"texto": "  "}, headers=CHAVE_DOCS).status_code == 400, "busca vazia -> 400")
+ok(anon.get(BUSCA, params={"texto": "produto similar para o de"}, headers=CHAVE_DOCS).status_code == 400,
+   "só palavras vazias (\"produto similar para o\") -> 400")
+
+r = anon.get(BUSCA, params={"texto": "Adesivos para CALÇADOS"}, headers=CHAVE_DOCS)
+b = r.json()
+ok(r.status_code == 200 and b["produtos"][0]["nome"] == "FLEXX AD 700" and b["encontrados"] == 1,
+   f"acha pela aplicação, sem acento e com plural ({[p['nome'] for p in b['produtos']]})")
+p = b["produtos"][0]
+ok(p["palavras_encontradas"] == ["adesivos", "calcados"] and "solados" in p["aplicacao"]
+   and "Viscosidade" in p["especificacoes_tecnicas"] and p["versao"] == "01",
+   "devolve as palavras que bateram, a aplicação e as especificações")
+ok(p["link_markdown"].startswith("[📄 Ficha técnica FLEXX AD 700 (SafetyChem, versão 01)](/api/safetychem/fichas/"),
+   "link da ficha técnica oficial, como na ferramenta por nome")
+ok("texto" not in p and "embalagens" not in p and "armazenamento_e_residuos" not in p,
+   "não devolve o texto bruto nem as seções que não servem para comparar")
+r = anon.get(BUSCA, params={"texto": "adesiva calcadista"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] >= 1 and r["produtos"][0]["nome"] == "FLEXX AD 700", "feminino e palavra derivada (\"calcadista\" acha \"calçados\")")
+
+r = anon.get(BUSCA, params={"texto": "espuma flexível alta resiliência para colchão"}, headers=CHAVE_DOCS).json()
+nomes = [x["nome"] for x in r["produtos"]]
+ok(nomes[0] == "FLEXX ES 500" and "FLEXX AD 700" not in nomes, f"descrição de espuma: o sistema de espuma vem primeiro ({nomes})")
+ok("Conforto" in r["produtos"][0]["caracteristicas_e_vantagens"], "inclui características e vantagens")
+ok(r["palavras_usadas"] == ["espuma", "flexivel", "alta", "resiliencia", "colchao"], "mostra as palavras usadas, sem as vazias")
+
+r = anon.get(BUSCA, params={"texto": "revisada aglomerada"}, headers=CHAVE_DOCS).json()
+ok(r["produtos"][0]["nome"] == "FLEXX AG 2047" and r["produtos"][0]["versao"] == "03", "busca na versão mais recente da ficha")
+r = anon.get(BUSCA, params={"texto": "aglomerada", "limite": 1}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 1, "limite=1 devolve um produto")
+r = anon.get(BUSCA, params={"texto": "aglomerada viscosidade", "limite": 50}, headers=CHAVE_DOCS)
+ok(r.status_code == 200 and 1 < r.json()["encontrados"] <= 8, f"limite acima do máximo é aceito e fica em até 8 ({r.json()['encontrados']})")
+r = anon.get(BUSCA, params={"texto": "espuma"}, headers=CHAVE_DOCS).json()
+nomes = [x["nome"] for x in r["produtos"]]
+ok(nomes.index("FLEXX ES 500") > nomes.index("FLEXX AG 2047"), f"palavra na aplicação pesa mais que na descrição ({nomes})")
+ok(enviar_ficha(adm, ficha_livre("FLEXX AD 700", "Adesivo de poliuretano base água.", "Colagem de laminados de madeira.",
+                                 "Viscosidade (25°C) cP 1500").replace(b"Vers\xc3\xa3o: 01", "Versão: 02".encode()),
+                "Ficha Tecnica_FLEXX AD 700_V02_20261111100000.pdf").json()["resultado"] == "atualizada", "(nova versão da ficha do adesivo)")
+r = anon.get(BUSCA, params={"texto": "laminado madeira"}, headers=CHAVE_DOCS).json()
+ok(r["produtos"][0]["nome"] == "FLEXX AD 700" and r["produtos"][0]["versao"] == "02", "ficha atualizada entra na busca na hora")
+r = anon.get(BUSCA, params={"texto": "solados calcados"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 0, "o texto da versão antiga sai da busca")
+r = anon.get(BUSCA, params={"texto": "zzqx cimento"}, headers=CHAVE_DOCS).json()
+ok(r["encontrados"] == 0 and r["produtos"] == [] and "área técnica" in r["orientacao"], "nada parecido: lista vazia e orientação")
+
 esq = anon.get("/api/ferramentas/openapi.json").json()
 ok(esq["paths"][FISPQ]["get"]["operationId"] == "dados_oficiais_safetychem", "esquema OpenAPI inclui a ferramenta do SafetyChem")
+ok(esq["paths"][BUSCA]["get"]["operationId"] == "buscar_fichas_safetychem" and
+   [x["name"] for x in esq["paths"][BUSCA]["get"]["parameters"]] == ["texto", "limite"], "esquema OpenAPI inclui a busca nas fichas")
 
 # ------------------------------------------------------------------ atalhos pessoais
 secao("atalhos pessoais (cards da tela inicial)")

@@ -266,6 +266,22 @@ async def ferramenta_openapi(request: Request):
                  "description": "Opcional: ficha_tecnica, fds, sds ou ficha_emergencia. Vazio = todos"},
             ],
             "responses": {"200": {"description": "Documentação oficial do produto"}},
+        }}, "/api/ferramentas/safetychem/buscar": {"get": {
+            "operationId": "buscar_fichas_safetychem",
+            "summary": "Procura nas fichas técnicas OFICIAIS (SafetyChem/Intertox) os produtos Flexível que batem com "
+                       "uma descrição: aplicação, tipo de produto, mercado e propriedades. Use para achar produto "
+                       "PARECIDO com outro (ex.: o boletim ou a FDS de um concorrente) quando não se sabe o nome. "
+                       "Devolve, do mais para o menos parecido, a aplicação, as especificações técnicas e o link "
+                       "da ficha de cada produto; a comparação dos valores é sua.",
+            "parameters": [
+                {"name": "texto", "in": "query", "required": True, "schema": {"type": "string"},
+                 "description": "Palavras que descrevem o produto procurado, ex.: adesivo calçado base solvente; "
+                                "espuma flexível alta resiliência colchão; pré-polímero NCO aglomerado"},
+                {"name": "limite", "in": "query", "required": False,
+                 "schema": {"type": "integer", "minimum": 1, "maximum": 8, "default": 5},
+                 "description": "Opcional: quantos produtos devolver (1 a 8, padrão 5)"},
+            ],
+            "responses": {"200": {"description": "Fichas técnicas mais parecidas"}},
         }}},
         "components": {"securitySchemes": {"chave": {"type": "http", "scheme": "bearer"}}},
         "security": [{"chave": []}],

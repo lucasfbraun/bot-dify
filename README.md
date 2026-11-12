@@ -445,6 +445,15 @@ Além da ficha técnica, o robô sincroniza a **FDS NBR 14725 (PT)** e a **SDS G
 - No agente: `dados_oficiais_safetychem` traz a `fds` por seção para todos os produtos (quando houver XML importado, os campos dele vêm junto) e o documento `sds` (inglês). `documentos_para_baixar` entrega a FDS e a SDS oficiais (`tipo=sds` para a inglesa).
 - **Composição:** a Seção 3 publicada mostra "Segredo industrial 1/2" com faixas. Atenção: pela norma, a FDS publicada cita os nomes de ingredientes perigosos nas seções 8 (limites de exposição), 10 e 11; isso já está no PDF público que vai aos clientes, e o agente recebe a FDS como publicada. O que fica protegido são as concentrações exatas e o CAS, que só existem no XML e são descartados na importação.
 
+### Busca por produto parecido nas fichas técnicas
+
+A ferramenta **buscar_fichas_safetychem** (`GET /api/ferramentas/safetychem/buscar?texto=...&limite=...`, mesma chave e mesmo esquema OpenAPI) procura pelo **conteúdo** das fichas técnicas, e não pelo nome. Serve para achar um produto Flexível parecido com outro, por exemplo o boletim ou a FDS de um concorrente que o vendedor anexou na CORA.IA.
+
+- O agente manda as palavras que descrevem o produto procurado (aplicação, tipo de produto, mercado, propriedades), por exemplo `adesivo calçado base solvente`. A busca ignora acentos, maiúsculas, singular/plural e masculino/feminino, e descarta palavras vazias ("produto", "similar", "para", "de"...).
+- Peso por seção: o nome e a **aplicação** pesam mais, depois a descrição e as características e vantagens, depois as especificações técnicas, o processo sugerido e os tempos de reatividade. Palavra que aparece em quase toda ficha ("poliuretano") vale pouco; palavra rara vale muito; palavras juntas na mesma ordem da busca ganham um extra.
+- Devolve até `limite` produtos (padrão 5, máximo 8), do mais para o menos parecido, com nome, versão, as palavras que bateram, a descrição, as seções úteis para comparar (aplicação, características e vantagens, especificações técnicas, tempos de reatividade, processo sugerido; cada uma cortada em ~900 caracteres) e o `link_markdown` da ficha. Só o que está publicado na ficha técnica: nenhuma composição.
+- A busca é por palavras: quem compara os valores (viscosidade, densidade, NCO...) e decide se o produto é mesmo parecido é o agente.
+
 ### Sincronização automática das fichas técnicas (robô)
 
 A própria plataforma faz o papel do robô, sem navegador e sem container extra:
@@ -475,6 +484,7 @@ A exportação traz os ingredientes reais (nome, CAS e concentração) marcados 
    `curl -s http://127.0.0.1:8090/api/ferramentas/openapi.json | sed 's#http://127.0.0.1:8090#http://10.100.100.13:8090#'`.
    Aparece a segunda ferramenta, **dados_oficiais_safetychem**.
 2. Adicione **dados_oficiais_safetychem** no nó Agent dos agentes que respondem sobre segurança e inclua na instrução que ela prevalece sobre as FISPQs do catálogo.
+3. Para a busca por produto parecido: depois de atualizar o esquema, aparece também **buscar_fichas_safetychem**. Adicione no nó Agent dos agentes que comparam produtos (ex.: COMERCIAL, para os boletins de concorrentes anexados) e diga na instrução para usá-la junto com a busca do catálogo, confirmando os valores com `dados_oficiais_safetychem`.
 
 ## Deploy no servidor do Dify (10.100.100.13)
 

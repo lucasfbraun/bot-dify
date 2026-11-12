@@ -9,11 +9,14 @@ aqui, ele PREVALECE sobre as FISPQs antigas da pasta de documentos e do catálog
   descartados na importação e nunca ficam guardados. A composição que fica é a da Seção 3 publicada na FISPQ.
 - O agente consulta pela ferramenta dados_oficiais_safetychem (GET /api/ferramentas/safetychem, mesma chave
   DOCUMENTOS_CHAVE), que separa a resposta por documento: ficha técnica, FDS (antiga FISPQ) e ficha de emergência.
+- Para achar produto PARECIDO (ex.: com o boletim de um concorrente), buscar_fichas_safetychem
+  (GET /api/ferramentas/safetychem/buscar) procura pelo conteúdo das fichas técnicas: aplicação, tipo e propriedades.
 """
 import asyncio
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -590,6 +593,163 @@ def baixar_ficha(doc_id: str, user: dict = Depends(usuario_atual)):
     return FileResponse(caminho, media_type="application/pdf", headers={
         "Content-Disposition": f"inline; filename*=UTF-8''{quote(nome)}", "Cache-Control": "private, no-store"})
 
+
+# ------------------------------------------------------------------ busca nas fichas técnicas (por conteúdo)
+# Para achar produto Flexível PARECIDO com outro (ex.: o boletim de um concorrente): o agente manda as palavras que
+# descrevem o produto (aplicação, tipo, propriedades) e recebe as fichas técnicas oficiais que mais batem. A busca é
+# por palavras (sem acento, singular/plural e masculino/feminino iguais); a comparação dos valores fica com o agente.
+BUSCA_MAX_TEXTO = 300
+BUSCA_LIMITE_PADRAO = 5
+BUSCA_LIMITE_MAXIMO = 8
+BUSCA_MAX_CARACTERES = 900  # por seção devolvida: o suficiente para comparar, sem estourar a conversa do agente
+PESO_CAMPO = {  # onde a palavra aparece pesa diferente: aplicação e descrição dizem o que o produto É
+    "nome": 3.0, "aplicacao": 3.0, "descricao": 2.0, "caracteristicas_e_vantagens": 2.0,
+    "especificacoes_tecnicas": 1.5, "processo_sugerido": 1.0, "tempos_de_reatividade": 1.0, "texto": 1.0,
+    "observacoes": 0.5, "seguranca": 0.3, "embalagens": 0.3, "armazenamento_e_residuos": 0.3,
+}
+SECOES_DEVOLVIDAS = ("aplicacao", "caracteristicas_e_vantagens", "especificacoes_tecnicas", "tempos_de_reatividade",
+                     "processo_sugerido")
+PALAVRAS_VAZIAS = set(
+    "a o e as os um uma uns umas de da do das dos em no na nos nas para pra por pelo pela pelos pelas com sem "
+    "que ou se ao aos sua seu suas seus como mais menos muito muita tipo produto produtos similar similares "
+    "parecido parecida parecidos parecidas equivalente equivalentes concorrente flexx grupo "
+    "ficha fichas tecnica tecnicas boletim boletins uso usado usada indicado indicada qual quais algum alguma "
+    "the of and for with".split())
+_indice_fichas: dict = {"assinatura": None, "itens": []}
+
+
+def _raiz(palavra: str) -> str:
+    """Raiz simples em português, igual dos dois lados da busca: adesivos = adesivo = adesiva, colchões = colchão."""
+    p = palavra
+    if p.isdigit() or len(p) <= 3:
+        return p
+    for sufixo, troca in (("oes", "ao"), ("aes", "ao"), ("ais", "al"), ("eis", "el"), ("ois", "ol"),
+                          ("res", "r"), ("zes", "z"), ("ns", "m")):
+        if p.endswith(sufixo) and len(p) > len(sufixo) + 2:
+            p = p[: -len(sufixo)] + troca
+            break
+    else:
+        if p.endswith("s") and not p.endswith("ss"):
+            p = p[:-1]
+    if len(p) > 4 and p[-1] in "aoe":
+        p = p[:-1]
+    return p
+
+
+def _raizes(texto: str) -> list[str]:
+    return [_raiz(p) for p in documentos.normalizar(texto).split()]
+
+
+def _indice_busca() -> list[dict]:
+    """Raízes de cada campo de cada ficha; refeito só quando alguma ficha muda."""
+    with db.conn() as c:
+        assinatura = c.execute("SELECT COUNT(*) AS n, group_concat(chave || ':' || sha256, '|') AS s "
+                               "FROM safetychem_fichas").fetchone()
+    assinatura = (assinatura["n"], hashlib.sha256((assinatura["s"] or "").encode()).hexdigest())
+    if _indice_fichas["assinatura"] == assinatura:
+        return _indice_fichas["itens"]
+    itens = []
+    for t in fichas_todas():
+        d = json.loads(t["dados"])
+        campos = {"nome": t["nome"], "descricao": d.get("descricao", ""), **(d.get("secoes") or {})}
+        if not d.get("secoes"):
+            campos["texto"] = d.get("texto", "")
+        raizes = {k: _raizes(v) for k, v in campos.items() if v and k in PESO_CAMPO}
+        itens.append({"ficha": t, "dados": d,
+                      "conjuntos": {k: set(v) for k, v in raizes.items()},
+                      "sequencias": {k: " " + " ".join(v) + " " for k, v in raizes.items()}})
+    _indice_fichas.update(assinatura=assinatura, itens=itens)
+    return itens
+
+
+def _termos_da_busca(texto: str) -> list[tuple[str, str]]:
+    """(palavra como veio, raiz), sem palavras vazias e sem repetir raiz."""
+    vistos, out = set(), []
+    for palavra in documentos.normalizar(texto).split():
+        if palavra in PALAVRAS_VAZIAS or (len(palavra) < 2 and not palavra.isdigit()):
+            continue
+        r = _raiz(palavra)
+        if r not in vistos:
+            vistos.add(r)
+            out.append((palavra, r))
+    return out
+
+
+def _cortar(texto: str, limite: int = BUSCA_MAX_CARACTERES) -> str:
+    texto = (texto or "").strip()
+    return texto if len(texto) <= limite else texto[:limite].rsplit(" ", 1)[0] + " …"
+
+
+def buscar_fichas(texto: str, limite: int = BUSCA_LIMITE_PADRAO) -> tuple[list[dict], list[str]]:
+    """Fichas técnicas que mais batem com a descrição, da mais para a menos parecida."""
+    termos = _termos_da_busca(texto)
+    itens = _indice_busca()
+    if not termos or not itens:
+        return [], [p for p, _ in termos]
+    total = len(itens)
+    # palavra que aparece em quase toda ficha ("poliuretano") vale pouco; a rara ("calçado") vale muito
+    em_quantas = {r: sum(1 for i in itens if any(r in s for s in i["conjuntos"].values())) for _, r in termos}
+    achados = []
+    for i in itens:
+        pontos, encontrados = 0.0, []
+        for palavra, r in termos:
+            peso = 0.0
+            for campo, conjunto in i["conjuntos"].items():
+                if r in conjunto:
+                    peso = max(peso, PESO_CAMPO[campo])
+                elif len(r) >= 5 and any(p.startswith(r) for p in conjunto):  # "calcad" acha "calcadista"
+                    peso = max(peso, PESO_CAMPO[campo] * 0.6)
+            if peso:
+                raridade = 1 + math.log(total / max(em_quantas[r], 1))
+                pontos += peso * raridade
+                encontrados.append(palavra)
+        if not encontrados:
+            continue
+        for (_, a), (_, b) in zip(termos, termos[1:]):  # palavras juntas, como na busca ("alta resiliencia")
+            for campo, seq in i["sequencias"].items():
+                if f" {a} {b} " in seq:
+                    pontos += PESO_CAMPO[campo]
+                    break
+        achados.append((pontos, len(encontrados), i, encontrados))
+    achados.sort(key=lambda x: (-x[0], -x[1], x[2]["ficha"]["nome"]))
+    out = []
+    for pontos, _, i, encontrados in achados[:limite]:
+        t, d = i["ficha"], i["dados"]
+        secoes = d.get("secoes") or {}
+        p = {"nome": t["nome"], "versao": t["versao"] or "", "data": d.get("data", ""),
+             "palavras_encontradas": encontrados, "descricao": _cortar(d.get("descricao", ""), 400)}
+        for k in SECOES_DEVOLVIDAS:
+            if secoes.get(k):
+                p[k] = _cortar(secoes[k])
+        if not secoes:
+            p["texto"] = _cortar(d.get("texto", ""), 1500)
+        p["link_markdown"] = f"[📄 {_rotulo_ficha(t)}]({_link_ficha(t)})"
+        out.append(p)
+    return out, [p for p, _ in termos]
+
+
+@router.get("/api/ferramentas/safetychem/buscar")
+async def ferramenta_buscar_fichas(request: Request, texto: str = "", limite: int = BUSCA_LIMITE_PADRAO):
+    """Procura nas fichas técnicas oficiais (SafetyChem) os produtos que batem com uma descrição: aplicação, tipo de
+    produto e propriedades. Para achar produto Flexível parecido com outro (ex.: de um concorrente)."""
+    documentos._checar_chave(request)
+    texto = texto.strip()[:BUSCA_MAX_TEXTO]
+    limite = max(1, min(limite, BUSCA_LIMITE_MAXIMO))
+    if not _termos_da_busca(texto):
+        raise HTTPException(400, "Descreva o produto procurado: aplicação, tipo e propriedades "
+                                 "(ex.: adesivo calçado base solvente).")
+    produtos, palavras = buscar_fichas(texto, limite)
+    if not produtos:
+        return {"encontrados": 0, "produtos": [], "palavras_usadas": palavras,
+                "orientacao": "Nenhuma ficha técnica oficial bate com essa descrição. Tente outras palavras (aplicação, "
+                              "tipo de produto, mercado) ou procure no catálogo; se nada aparecer, diga que não "
+                              "achou produto parecido e sugira falar com a área técnica."}
+    return {"encontrados": len(produtos), "produtos": produtos, "palavras_usadas": palavras,
+            "orientacao": "Fichas técnicas OFICIAIS (SafetyChem) que mais batem com a descrição, da mais para a menos "
+                          "parecida. Bater palavras não prova que o produto é equivalente: compare aplicação e "
+                          "especificações com o produto procurado e diga o que é igual e o que é diferente. Use só o "
+                          "que está na ficha; cite o produto e a versão (ex.: \"ficha técnica FLEXX AG 2047, versão "
+                          "03\"). Para o usuário abrir a ficha, use o link_markdown exatamente como veio."}
 
 # ------------------------------------------------------------------ sincronização automática com o SafetyChem
 # Entra com o usuário do robô, lista as fichas técnicas publicadas (a mesma pesquisa da tela Documentos > Documentos
